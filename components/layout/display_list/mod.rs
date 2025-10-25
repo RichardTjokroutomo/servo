@@ -703,12 +703,30 @@ impl Fragment {
         let include_whitespace =
             fragment.has_selection() || text_decorations.iter().any(|item| !item.line.is_empty());
 
-        let glyphs = glyphs(
-            &fragment.glyphs,
-            baseline_origin,
-            fragment.justification_adjustment,
-            include_whitespace,
-        );
+        let mut glyphs: Vec<wr::GlyphInstance>;
+        match fragment.inline_styles.style.borrow().get_text().text_overflow.second {
+            TextOverflowSide::Ellipsis => {
+                glyphs = glyphs_handler(
+                    &fragment.glyphs,
+                    baseline_origin,
+                    fragment.justification_adjustment,
+                    include_whitespace,
+                    fragment.parent_width,
+                    Au(960), // dummy for now
+                );
+            },
+            _ => {
+                glyphs = glyphs_handler(
+                    &fragment.glyphs,
+                    baseline_origin,
+                    fragment.justification_adjustment,
+                    include_whitespace,
+                    fragment.rect.max_x() - fragment.rect.min_x(),
+                    Au(0),
+                );
+            },
+        }
+
         if glyphs.is_empty() {
             return;
         }
@@ -1556,17 +1574,25 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
-fn glyphs(
+fn glyphs_handler(
     glyph_runs: &[Arc<GlyphStore>],
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
     include_whitespace: bool,
+    max_limit: Au,
+    reserved_space: Au,
 ) -> Vec<wr::GlyphInstance> {
     use fonts_traits::ByteIndex;
     use range::Range;
 
     let mut glyphs = vec![];
+    let mut total_advance = Au(0);
+
     for run in glyph_runs {
+        match &run.ellipsis_glyph {
+            Some(x) => println!("got some ellipsis glyph!"),
+            None => println!("got NO ellipsis glyph!"),
+        }
         for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
             if !run.is_whitespace() || include_whitespace {
                 let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
@@ -1574,11 +1600,39 @@ fn glyphs(
                     baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
                     baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
                 );
+                total_advance += glyph.advance();
                 let glyph = wr::GlyphInstance {
                     index: glyph.id(),
                     point,
                 };
-                glyphs.push(glyph);
+                // optimize this later
+                if total_advance + reserved_space <= max_limit {
+                    glyphs.push(glyph);
+                }
+                else { // check if text-overflow: ellipsis
+                    /// EXPERIMENTAL
+                    match &run.ellipsis_glyph {
+                        Some(ellipsis_glyph) => {
+                            for ellipsis_glyph_info in ellipsis_glyph.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), ellipsis_glyph.len())){
+                                let ellipsis_glyph_offset = ellipsis_glyph_info.offset().unwrap_or(Point2D::zero());
+                                let elli_point = units::LayoutPoint::new(
+                                    baseline_origin.x.to_f32_px() + ellipsis_glyph_offset.x.to_f32_px(),
+                                    baseline_origin.y.to_f32_px() + ellipsis_glyph_offset.y.to_f32_px()
+                                );
+
+                                let elli_glyph = wr::GlyphInstance {
+                                    index: ellipsis_glyph_info.id(),
+                                    point: elli_point,
+                                };
+                                glyphs.push(elli_glyph);
+                            }
+                        },
+                        None => {
+                            println!("yes.");
+                        },
+                    }
+                    
+                }
             }
 
             if glyph.char_is_word_separator() {

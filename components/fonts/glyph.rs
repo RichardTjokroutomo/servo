@@ -456,6 +456,9 @@ pub struct GlyphStore {
     is_single_preserved_newline: bool,
 
     is_rtl: bool,
+
+    /// experimental: store ellipsis glyph here.
+    pub ellipsis_glyph: Option<Box<GlyphStore>>,
 }
 
 impl GlyphStore {
@@ -481,7 +484,15 @@ impl GlyphStore {
             ends_with_whitespace,
             is_single_preserved_newline,
             is_rtl,
+            ellipsis_glyph: None,
         }
+    }
+
+    pub fn set_ellipsis_glyph(
+        &mut self,
+        ellipsis_glyph_store: GlyphStore,
+    ){
+        self.ellipsis_glyph = Some(Box::new(ellipsis_glyph_store));
     }
 
     #[inline]
