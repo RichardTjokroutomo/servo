@@ -401,13 +401,31 @@ impl Font {
             options.flags.contains(ShapingFlags::RTL_FLAG),
         );
 
+        /// experimental: put ellipsis glyph in special glyphs.
+        let special_texts = "\u{2026}";
+        let mut special_glyphs = GlyphStore::new(
+            special_texts.len(),
+            options
+                .flags
+                .contains(ShapingFlags::IS_WHITESPACE_SHAPING_FLAG),
+            options
+                .flags
+                .contains(ShapingFlags::ENDS_WITH_WHITESPACE_SHAPING_FLAG),
+            is_single_preserved_newline,
+            options.flags.contains(ShapingFlags::RTL_FLAG),
+        );
+
         if self.can_do_fast_shaping(text, options) {
             debug!("shape_text: Using ASCII fast path.");
             self.shape_text_fast(text, options, &mut glyphs);
+            self.shape_text_fast(special_texts, options, &mut special_glyphs);
         } else {
             debug!("shape_text: Using Harfbuzz.");
             self.shape_text_harfbuzz(text, options, &mut glyphs);
+            self.shape_text_harfbuzz(special_texts, options, &mut special_glyphs);
         }
+
+        glyphs.set_special_glyphs(special_glyphs);
 
         let shaped_text = Arc::new(glyphs);
         let mut cache = self.cached_shape_data.write();

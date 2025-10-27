@@ -656,6 +656,7 @@ impl Fragment {
             Fragment::Text(text) => {
                 let text = &*text.borrow();
 
+                /* 
                 print!("current text width: {0}, parent containing block width: {1}; ",
                 text.rect.max_x().to_f32_px() - text.rect.min_x().to_f32_px(),
                 text.parent_width.to_f32_px() 
@@ -664,7 +665,7 @@ impl Fragment {
                     TextOverflowSide::Ellipsis => println!("this TEXT fragment is ellipsis!"),
                     TextOverflowSide::Clip => println!("this TEXT fragment is clip!"),
                     _ => println!("this TEXT fragment is string!"),
-                }
+                } */
                 match text
                     .inline_styles
                     .style
@@ -833,7 +834,7 @@ impl Fragment {
                     .push_rect(&insertion_point_common, insertion_point_rect, rgba(color));
             }
         }
-
+        /* 
         builder.wr().push_text(
             &common,
             rect.to_webrender(),
@@ -841,7 +842,53 @@ impl Fragment {
             fragment.font_key,
             rgba(color),
             None,
-        );
+        ); */
+
+        // handle text overflow ellipsis
+        match parent_style.get_text().text_overflow.second {
+            TextOverflowSide::Ellipsis => {
+                let Some(special_glyphs) = &fragment.glyphs[0].special_glyphs else {
+                    unreachable!("special_glyphs always exists");
+                };
+                let ellipsis_glyphs = ellipsis_glyphs(
+                    &fragment.glyphs,
+                    &Arc::new(*special_glyphs.clone()), 
+                    baseline_origin,
+                    fragment.justification_adjustment,
+                    include_whitespace,
+                    fragment.parent_width,
+                    );
+                
+                    builder.wr().push_text(
+                        &common,
+                        rect.to_webrender(),
+                        &ellipsis_glyphs,
+                        fragment.font_key,
+                        rgba(color),
+                        None,
+                    );
+            },
+            TextOverflowSide::Clip => {
+                builder.wr().push_text(
+                    &common,
+                    rect.to_webrender(),
+                    &glyphs,
+                    fragment.font_key,
+                    rgba(color),
+                    None,
+                );
+            },
+            _ => {
+                builder.wr().push_text(
+                    &common,
+                    rect.to_webrender(),
+                    &glyphs,
+                    fragment.font_key,
+                    rgba(color),
+                    None,
+                );
+            },
+        }
 
         for text_decoration in text_decorations.iter() {
             if text_decoration
@@ -1579,6 +1626,76 @@ fn glyphs(
                     point,
                 };
                 glyphs.push(glyph);
+            }
+
+            if glyph.char_is_word_separator() {
+                baseline_origin.x += justification_adjustment;
+            }
+            baseline_origin.x += glyph.advance();
+        }
+    }
+    glyphs
+}
+
+fn ellipsis_glyphs(
+    glyph_runs: &[Arc<GlyphStore>], // the glyph run
+    ellipsis_glyph_store: &Arc<GlyphStore>, // ellipsis glyph
+    mut baseline_origin: PhysicalPoint<Au>, // x is the starting point
+    justification_adjustment: Au,
+    include_whitespace: bool,
+    max_limit: Au, // width of the containing block
+) -> Vec<wr::GlyphInstance> {
+    use fonts_traits::ByteIndex;
+    use range::Range;
+
+    let mut glyphs = vec![];
+    let mut ellipsis_origin_found = false;
+    let mut ellipsis_x_origin = Au(0);
+    let mut total_advance = Au(0);
+    let mut ellipsis_glyph_width = Au(0);
+
+    // get width of ellipsis_glyph
+    for ellipsis_glyph_temp in ellipsis_glyph_store.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), ellipsis_glyph_store.len())){
+        if !ellipsis_glyph_store.is_whitespace() || include_whitespace {
+            ellipsis_glyph_width = ellipsis_glyph_temp.advance();
+        }
+    }
+
+    // create the glyphInstance vector
+    for run in glyph_runs {
+        for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
+            if !run.is_whitespace() || include_whitespace {
+                let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
+                let point = units::LayoutPoint::new(
+                    baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
+                    baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
+                );
+
+                if !ellipsis_origin_found {
+                    if total_advance + glyph.advance() + ellipsis_glyph_width > max_limit {
+                        ellipsis_origin_found = true;
+                        ellipsis_x_origin = total_advance + glyph.advance();
+
+                        for ellipsis_glyph in ellipsis_glyph_store.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), ellipsis_glyph_store.len())){
+                            if !ellipsis_glyph_store.is_whitespace() || include_whitespace {
+                                let ellipsis_glyph = wr::GlyphInstance {
+                                    index: ellipsis_glyph.id(),
+                                    point,
+                                };
+                                glyphs.push(ellipsis_glyph);
+                            }
+                        }
+                    }
+                    else{
+                        let glyph = wr::GlyphInstance {
+                            index: glyph.id(),
+                            point,
+                        };
+                        glyphs.push(glyph);
+                    }
+                }
+                
+                total_advance += glyph.advance();
             }
 
             if glyph.char_is_word_separator() {
