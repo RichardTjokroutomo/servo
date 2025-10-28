@@ -76,6 +76,7 @@ pub(crate) struct TextFragment {
     pub justification_adjustment: Au,
     pub selection_range: Option<ServoRange<ByteIndex>>,
     pub parent_width: Au, // used to obtain the width of the containing block
+    pub parent_style: ComputedValues,
 }
 
 #[derive(MallocSizeOf)]
