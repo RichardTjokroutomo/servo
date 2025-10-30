@@ -656,16 +656,6 @@ impl Fragment {
             Fragment::Text(text) => {
                 let text = &*text.borrow();
 
-                /* 
-                print!("current text width: {0}, parent containing block width: {1}; ",
-                text.rect.max_x().to_f32_px() - text.rect.min_x().to_f32_px(),
-                text.parent_width.to_f32_px() 
-                );
-                match text.inline_styles.style.borrow().get_text().text_overflow.second {
-                    TextOverflowSide::Ellipsis => println!("this TEXT fragment is ellipsis!"),
-                    TextOverflowSide::Clip => println!("this TEXT fragment is clip!"),
-                    _ => println!("this TEXT fragment is string!"),
-                } */
                 match text
                     .inline_styles
                     .style
@@ -845,7 +835,7 @@ impl Fragment {
         ); */
 
         // handle text overflow ellipsis
-        match parent_style.get_text().text_overflow.second {
+        match fragment.parent_style.get_text().text_overflow.second {
             TextOverflowSide::Ellipsis => {
                 let Some(special_glyphs) = &fragment.glyphs[0].special_glyphs else {
                     unreachable!("special_glyphs always exists");
