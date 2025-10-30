@@ -26,6 +26,7 @@ use crate::positioned::{
 };
 use crate::{ContainingBlock, ContainingBlockSize};
 use style::values::specified::text::TextOverflowSide;
+use base::id::RenderingGroupId;
 
 pub(super) struct LineMetrics {
     /// The block offset of the line start in the containing
@@ -598,6 +599,8 @@ impl LineItemLayout<'_, '_> {
                 selection_range: text_item.selection_range,
                 parent_width: self.layout.containing_block.size.inline,
                 parent_style: self.layout.containing_block.style.clone(),
+                font_context: self.layout.layout_context.font_context.clone(),
+                rendering_group_id: self.layout.layout_context.rendering_group_id,
             })),
             content_rect,
         ));

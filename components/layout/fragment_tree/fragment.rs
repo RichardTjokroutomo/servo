@@ -25,6 +25,8 @@ use crate::cell::ArcRefCell;
 use crate::flow::inline::SharedInlineStyles;
 use crate::geom::{LogicalSides, PhysicalPoint, PhysicalRect};
 use crate::style_ext::ComputedValuesExt;
+use fonts::FontContext;
+use base::id::RenderingGroupId;
 
 #[derive(Clone, MallocSizeOf)]
 pub(crate) enum Fragment {
@@ -77,6 +79,9 @@ pub(crate) struct TextFragment {
     pub selection_range: Option<ServoRange<ByteIndex>>,
     pub parent_width: Au, // used to obtain the width of the containing block
     pub parent_style: ComputedValues,
+    #[ignore_malloc_size_of = "because reasons"]
+    pub font_context: Arc<FontContext>,
+    pub rendering_group_id: RenderingGroupId,
 }
 
 #[derive(MallocSizeOf)]
