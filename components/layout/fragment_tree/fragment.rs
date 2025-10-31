@@ -79,9 +79,10 @@ pub(crate) struct TextFragment {
     pub selection_range: Option<ServoRange<ByteIndex>>,
     pub parent_width: Au, // used to obtain the width of the containing block
     pub parent_style: ComputedValues,
-    #[ignore_malloc_size_of = "because reasons"]
+    #[ignore_malloc_size_of = "yes."]
     pub font_context: Arc<FontContext>,
-    pub rendering_group_id: RenderingGroupId,
+    #[conditional_malloc_size_of]
+    pub ellipsis_glyph_store: Arc<GlyphStore>,
 }
 
 #[derive(MallocSizeOf)]

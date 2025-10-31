@@ -76,7 +76,7 @@ pub(crate) struct TextRunSegment {
 }
 
 impl TextRunSegment {
-    fn new(font_index: usize, script: Script, bidi_level: Level, start_offset: usize) -> Self {
+    pub(super) fn new(font_index: usize, script: Script, bidi_level: Level, start_offset: usize) -> Self {
         Self {
             font_index,
             script,
@@ -181,7 +181,7 @@ impl TextRunSegment {
     /// Shape the text of this [`TextRunSegment`], first finding "words" for the shaper by processing
     /// the linebreaks found in the owning [`super::InlineFormattingContext`]. Linebreaks are filtered,
     /// based on the style of the parent inline box.
-    fn shape_text(
+    pub(super) fn shape_text(
         &mut self,
         parent_style: &ComputedValues,
         formatting_context_text: &str,

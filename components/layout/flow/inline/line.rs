@@ -27,6 +27,14 @@ use crate::positioned::{
 use crate::{ContainingBlock, ContainingBlockSize};
 use style::values::specified::text::TextOverflowSide;
 use base::id::RenderingGroupId;
+use crate::flow::inline::text_run::TextRunSegment;
+use crate::flow::inline::add_or_get_font;
+use crate::flow::inline::FontKeyAndMetrics;
+use unicode_script::Script;
+use fonts::{
+    FontContext, FontRef, GlyphRun, LAST_RESORT_GLYPH_ADVANCE, ShapingFlags, ShapingOptions,
+};
+use super::line_breaker::LineBreaker;
 
 pub(super) struct LineMetrics {
     /// The block offset of the line start in the containing
@@ -586,6 +594,65 @@ impl LineItemLayout<'_, '_> {
             },
         };
 
+        // generate the ellipsis glyph here.
+        /* 
+        let ellipsis_text = "\u{2026}";
+        let ellipsis_font_context = self.layout.layout_context.font_context.clone();
+        let ellipsis_font_cache: Vec<FontKeyAndMetrics>; // dummy. 
+        let ellipsis_bidi = BidiInfo::new(ellipsis_text, None);
+        let ellipsis_parent_style = self.layout.containing_block.style.clone();
+        let ellipsis_rendering_gid = self.layout.layout_context.rendering_group_id;
+        */
+
+        // segment_ellipsis_text_by_font
+        // TextRunSegment::new(font_index, script, bidi_level, start_byte_index),
+        let ellipsis_text = "\u{2026}";
+        let ellipsis_char = ellipsis_text.chars().next().unwrap();
+
+        let script = Script::from(ellipsis_char); // character is char. convert ellipsis_text to ellipsis_char
+        let ellipsis_bidi = BidiInfo::new(ellipsis_text, None);
+        let bidi_level = ellipsis_bidi.levels[0];
+        let start_byte_index: usize = 0;
+        
+        //
+        
+        //let lang = parent_style.get_font()._x_lang.clone();
+
+        let mut ellipsis_font_cache: Vec<FontKeyAndMetrics> = vec![]; // dummy.
+        let ellipsis_font_context = self.layout.layout_context.font_context.clone();
+        let ellipsis_rendering_group_id = self.layout.layout_context.rendering_group_id; 
+
+        // font is also fontref
+        let font_group = ellipsis_font_context.font_group(self.layout.containing_block.style.clone().clone_font());
+        let Some(font) = font_group.write().find_by_codepoint(
+            &ellipsis_font_context,
+            ellipsis_char, // ellipsis_char
+            None, // next chara.
+            None, // None
+            None, // can be none.
+        ) else { todo!() };
+
+        let font_index = add_or_get_font(&font, &mut ellipsis_font_cache, &ellipsis_font_context, ellipsis_rendering_group_id);
+
+        let mut ellipsis_run_segment = TextRunSegment::new(font_index, script, bidi_level, start_byte_index);
+
+        // text_segment.shape_text
+        let mut flags = ShapingFlags::empty();
+        let mut linebreaker = LineBreaker::new(ellipsis_text);
+
+        let letter_spacing = None;
+        let word_spacing = Au(0);
+
+        let shaping_options = ShapingOptions {
+            letter_spacing,
+            word_spacing,
+            script: ellipsis_run_segment.script,
+            flags,
+        };
+
+        ellipsis_run_segment.shape_text(&self.layout.containing_block.style.clone(), ellipsis_text, &mut linebreaker, &shaping_options, font);
+
+
         self.current_state.inline_advance += inline_advance;
         self.current_state.fragments.push((
             Fragment::Text(ArcRefCell::new(TextFragment {
@@ -600,11 +667,14 @@ impl LineItemLayout<'_, '_> {
                 parent_width: self.layout.containing_block.size.inline,
                 parent_style: self.layout.containing_block.style.clone(),
                 font_context: self.layout.layout_context.font_context.clone(),
-                rendering_group_id: self.layout.layout_context.rendering_group_id,
+                ellipsis_glyph_store: ellipsis_run_segment.runs[0].glyph_store.clone(),
             })),
             content_rect,
         ));
     }
+
+    // experimental functions
+    
 
     fn layout_atomic(&mut self, atomic: AtomicLineItem) {
         // The initial `start_corner` of the Fragment is only the PaddingBorderMargin sum start
