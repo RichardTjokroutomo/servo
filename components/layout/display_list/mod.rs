@@ -698,6 +698,10 @@ impl Fragment {
             baseline_origin,
             fragment.justification_adjustment,
             include_whitespace,
+            fragment.parent_width,
+            fragment.text_clip,
+            fragment.contains_first_character_of_the_line,
+            fragment.inline_offset,
         );
         if glyphs.is_empty() {
             return;
@@ -1551,13 +1555,21 @@ fn glyphs(
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
     include_whitespace: bool,
+    containing_block_width: Au,
+    text_clip_boundaries: (Au, Au), // TODO: handle left side ellipsis.
+    contains_first_character_of_the_line: bool,
+    inline_offset: Au,
 ) -> Vec<wr::GlyphInstance> {
     use fonts_traits::ByteIndex;
     use range::Range;
 
     let mut glyphs = vec![];
+    let mut total_advance = inline_offset;
+    let max_total_advance = containing_block_width - text_clip_boundaries.1;
+
     for run in glyph_runs {
         for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
+            total_advance += glyph.advance();
             if !run.is_whitespace() || include_whitespace {
                 let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
                 let point = units::LayoutPoint::new(
@@ -1568,13 +1580,20 @@ fn glyphs(
                     index: glyph.id(),
                     point,
                 };
-                glyphs.push(glyph);
+                // first glyph must never be ellided. otherwise, check if it's time to crop.
+                // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
+                // https://www.w3.org/TR/css-ui-3/#text-overflow
+                if total_advance <= max_total_advance || (glyphs.is_empty() && contains_first_character_of_the_line) { 
+                    glyphs.push(glyph);
+                }
             }
 
             if glyph.char_is_word_separator() {
                 baseline_origin.x += justification_adjustment;
+                total_advance += justification_adjustment;
             }
             baseline_origin.x += glyph.advance();
+            
         }
     }
     glyphs

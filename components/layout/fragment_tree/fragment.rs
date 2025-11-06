@@ -75,6 +75,16 @@ pub(crate) struct TextFragment {
     /// Extra space to add for each justification opportunity.
     pub justification_adjustment: Au,
     pub selection_range: Option<ServoRange<ByteIndex>>,
+
+    /// relevant fields used for handling `text-overflow: ellipsis`
+    pub line_number: i32,
+    pub parent_width: Au,
+
+    // the width of left & right clip. CSS specs refers to them as `first` & `second`.
+    // when `text-overflow: ellipsis`, right clip is the width of the ellipsis glyph.
+    pub text_clip: (Au, Au), 
+    pub contains_first_character_of_the_line: bool,
+    pub inline_offset: Au,
 }
 
 #[derive(MallocSizeOf)]
