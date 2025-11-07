@@ -34,6 +34,7 @@ use fonts::{
 };
 use euclid::Point2D;
 use style::values::specified::text::TextOverflowSide;
+use style::properties::LonghandId::WebkitLineClamp;
 use style::
 computed_values::overflow_x::T as Overflow_X;
 
@@ -171,6 +172,8 @@ impl LineItemLayout<'_, '_> {
         effective_block_advance: &LineBlockSizes,
         justification_adjustment: Au,
         is_phantom_line: bool,
+        line_number: i32,
+        processing_last_line: bool,
     ) -> Vec<Fragment> {
         let baseline_offset = effective_block_advance.find_baseline_offset();
         LineItemLayout {
@@ -188,7 +191,7 @@ impl LineItemLayout<'_, '_> {
             justification_adjustment,
             is_phantom_line,
         }
-        .layout(line_items)
+        .layout(line_items, line_number, processing_last_line)
     }
 
     /// Start and end inline boxes in tree order, so that it reflects the given inline box.
@@ -216,7 +219,7 @@ impl LineItemLayout<'_, '_> {
         }
     }
 
-    pub(super) fn layout(&mut self, mut line_items: Vec<LineItem>) -> Vec<Fragment> {
+    pub(super) fn layout(&mut self, mut line_items: Vec<LineItem>, line_number: i32, processing_last_line: bool) -> Vec<Fragment> {
         let mut last_level = Level::ltr();
         let mut total_textrun = 0;
         let levels: Vec<_> = line_items
@@ -292,10 +295,10 @@ impl LineItemLayout<'_, '_> {
                 LineItem::TextRun(_, text_run) => {
                     current_textrun += 1;
                     if current_textrun == total_textrun {
-                        self.layout_text_run(text_run, true);
+                        self.layout_text_run(text_run, true, line_number, processing_last_line);
                     }
                     else {
-                        self.layout_text_run(text_run, false);
+                        self.layout_text_run(text_run, false, line_number, processing_last_line);
                     }
                 },
                 LineItem::Atomic(_, atomic) => self.layout_atomic(atomic),
@@ -570,10 +573,23 @@ impl LineItemLayout<'_, '_> {
         }
     }
 
-    fn layout_text_run(&mut self, text_item: TextRunLineItem, is_last_textrun: bool) {
+    fn layout_text_run(&mut self, text_item: TextRunLineItem, is_last_textrun: bool, line_number: i32, processing_last_line: bool) {
         if text_item.text.is_empty() {
             return;
         }
+
+        // some check
+        let line_clamp = self.layout.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
+
+        println!("processing last line: {:?}", processing_last_line);
+        println!("line-clamp: {:?}", line_clamp.0);
+        println!("current line: {:?}", line_number);
+        if line_clamp.0 == line_number {
+            println!("same!");
+        } else {
+            println!("not same!");
+        }
+        println!("");
 
         // check if current text fragment to be generated will be the first of the line.
         let original_inline_advance = self.current_state.inline_advance;
@@ -583,10 +599,10 @@ impl LineItemLayout<'_, '_> {
             first_text_item_of_the_line = true;
         }
 
-        // check if we can ellide the current `TextRunLineItem`
+        // check if we can ellide the current `TextRunLineItem` 
         let mut can_be_ellided = false; // TODO: add more logic later on.
 
-        // 1. check the parent style's text-overflow property.
+        // 1. check based on text-overflow: ellipsis
         let parent_style = self.layout.ifc.shared_inline_styles.style.borrow();
         match parent_style.get_text().text_overflow.second {
             TextOverflowSide::Ellipsis => {
@@ -599,6 +615,27 @@ impl LineItemLayout<'_, '_> {
             _ => {}, // TODO: handle strings.
         }
 
+        // 2. check based on -webkit-line-clamp
+        let webkit_line_clamp = self.layout.ifc.shared_inline_styles.style
+        .borrow()
+        .get_box()
+        ._webkit_line_clamp;
+
+        /*   
+        if !is_last_textrun {
+            // 2.1. webkit_line_clamp.0 == 0 => no line clamp.
+            if webkit_line_clamp.0 > line_number { can_be_ellided = false}; // 2.2 don't ellide.
+            if webkit_line_clamp.0 == line_number {can_be_ellided = true}; // 2.3 can ellide.
+            if webkit_line_clamp.0 < line_number && webkit_line_clamp.0 != 0 {
+                return;
+            }; // 2.4 don't generate the line.
+        }
+        */
+
+        if webkit_line_clamp.0 != 0 {
+            can_be_ellided = true;
+        }
+        
         let mut number_of_justification_opportunities = 0;
         let mut inline_advance = text_item
             .text
@@ -640,11 +677,13 @@ impl LineItemLayout<'_, '_> {
         && ((self.current_state.inline_advance > self.layout.containing_block.size.inline 
         && original_inline_advance < self.layout.containing_block.size.inline) 
         || (self.current_state.inline_advance == self.layout.containing_block.size.inline 
-        && !is_last_textrun)) {
+        && !is_last_textrun)
+        || (self.current_state.inline_advance >= self.layout.containing_block.size.inline - Au(960) // TODO: fix this logic.
+        && webkit_line_clamp.0 == line_number)) {
             // create ellipsis text fragment & its bounding box
             let Some((overflow_marker_textrun_segment, overflow_marker_font)) = self.form_overflow_marker(&"\u{2026}") else {
-                    todo!()
-                };
+                todo!()
+            };
             let (overflow_marker_content_rect, 
                 overflow_marker_textrun_segment, 
                 text_item) = self.
@@ -653,6 +692,7 @@ impl LineItemLayout<'_, '_> {
                 text_item, 
                 original_inline_advance, 
             );
+            
             // with the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
             let overflow_marker_width = (Au(0), overflow_marker_textrun_segment.runs[0].glyph_store.total_advance());
             
@@ -680,6 +720,7 @@ impl LineItemLayout<'_, '_> {
                         overflow_marker_width: overflow_marker_width,
                         contains_first_character_of_the_line: first_text_item_of_the_line,
                         inline_offset: original_inline_advance,
+                        line_number: line_number,
                     })),
                     content_rect,
                 ));
@@ -700,6 +741,7 @@ impl LineItemLayout<'_, '_> {
                     overflow_marker_width: (Au(0), Au(0)),
                     contains_first_character_of_the_line: false,
                     inline_offset: original_inline_advance,
+                    line_number: line_number,
                 })),
                 overflow_marker_content_rect,
             ));
@@ -720,6 +762,7 @@ impl LineItemLayout<'_, '_> {
                     overflow_marker_width: (Au(0), Au(0)),
                     contains_first_character_of_the_line: first_text_item_of_the_line,
                     inline_offset: original_inline_advance,
+                    line_number: line_number,
                 })),
                 content_rect,
             ));

@@ -84,6 +84,9 @@ pub(crate) struct TextFragment {
     pub overflow_marker_width: (Au, Au), 
     pub contains_first_character_of_the_line: bool,
     pub inline_offset: Au,
+
+    // experimental
+    pub line_number: i32,
 }
 
 #[derive(MallocSizeOf)]
