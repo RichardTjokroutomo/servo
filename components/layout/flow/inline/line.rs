@@ -632,7 +632,7 @@ impl LineItemLayout<'_, '_> {
         }
         */
 
-        if webkit_line_clamp.0 != 0 {
+        if webkit_line_clamp.0 == line_number {
             can_be_ellided = true;
         }
         
@@ -671,27 +671,29 @@ impl LineItemLayout<'_, '_> {
 
         self.current_state.inline_advance += inline_advance;
 
+        // create ellipsis text fragment & its bounding box
+        let Some((overflow_marker_textrun_segment, overflow_marker_font)) = self.form_overflow_marker(&"\u{2026}") else {
+            todo!()
+        };
+        let (overflow_marker_content_rect, 
+            overflow_marker_textrun_segment, 
+            text_item) = self.
+        form_overflow_marker_bounding_box(
+            overflow_marker_textrun_segment, 
+            text_item, 
+            original_inline_advance, 
+        );
 
+        let padding = self.layout.containing_block.style.get_padding();
+        println!("CONTAINER WIDTH: {:?}", self.layout.containing_block.size.inline);
+        println!("PADDING RIGHT: {:?}", padding.padding_right);
         // create & insert text fragment to vector
         if can_be_ellided 
         && ((self.current_state.inline_advance > self.layout.containing_block.size.inline 
         && original_inline_advance < self.layout.containing_block.size.inline) 
-        || (self.current_state.inline_advance == self.layout.containing_block.size.inline 
+        || (self.current_state.inline_advance == self.layout.containing_block.size.inline
         && !is_last_textrun)
-        || (self.current_state.inline_advance >= self.layout.containing_block.size.inline - Au(960) // TODO: fix this logic.
-        && webkit_line_clamp.0 == line_number)) {
-            // create ellipsis text fragment & its bounding box
-            let Some((overflow_marker_textrun_segment, overflow_marker_font)) = self.form_overflow_marker(&"\u{2026}") else {
-                todo!()
-            };
-            let (overflow_marker_content_rect, 
-                overflow_marker_textrun_segment, 
-                text_item) = self.
-            form_overflow_marker_bounding_box(
-                overflow_marker_textrun_segment, 
-                text_item, 
-                original_inline_advance, 
-            );
+        ) {
             
             // with the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
             let overflow_marker_width = (Au(0), overflow_marker_textrun_segment.runs[0].glyph_store.total_advance());
