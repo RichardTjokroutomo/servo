@@ -1558,8 +1558,13 @@ impl InlineFormattingContextLayout<'_> {
             println!("-------------------------- break?????? --------------------------");
 
             let wklc = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
-            if self.number_of_lines < wklc.0 - 1 {
-                self.process_line_break(false /* forced_line_break */);
+            if wklc.0 == 0 {
+                self.process_line_break(false);
+            }
+            else {
+                if self.number_of_lines < wklc.0 - 1 {
+                    self.process_line_break(false /* forced_line_break */);
+                }
             }
         }
         self.commit_current_segment_to_line();
