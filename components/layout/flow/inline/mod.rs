@@ -1554,15 +1554,12 @@ impl InlineFormattingContextLayout<'_> {
         };
 
         if self.new_potential_line_size_causes_line_break(&potential_line_size) {
-            println!("IFC current line: {:?}", self.number_of_lines);
-            println!("-------------------------- break?????? --------------------------");
-
-            let wklc = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
-            if wklc.0 == 0 {
+            let line_clamp_number = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
+            if line_clamp_number.0 == 0 {
                 self.process_line_break(false);
             }
             else {
-                if self.number_of_lines < wklc.0 - 1 {
+                if self.number_of_lines < line_clamp_number.0 - 1 { // minus one because we start from zero
                     self.process_line_break(false /* forced_line_break */);
                 }
             }

@@ -578,19 +578,6 @@ impl LineItemLayout<'_, '_> {
             return;
         }
 
-        // some check
-        let line_clamp = self.layout.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
-
-        println!("processing last line: {:?}", processing_last_line);
-        println!("line-clamp: {:?}", line_clamp.0);
-        println!("current line: {:?}", line_number);
-        if line_clamp.0 == line_number {
-            println!("same!");
-        } else {
-            println!("not same!");
-        }
-        println!("");
-
         // check if current text fragment to be generated will be the first of the line.
         let original_inline_advance = self.current_state.inline_advance;
         let mut first_text_item_of_the_line = false;
@@ -620,17 +607,6 @@ impl LineItemLayout<'_, '_> {
         .borrow()
         .get_box()
         ._webkit_line_clamp;
-
-        /*   
-        if !is_last_textrun {
-            // 2.1. webkit_line_clamp.0 == 0 => no line clamp.
-            if webkit_line_clamp.0 > line_number { can_be_ellided = false}; // 2.2 don't ellide.
-            if webkit_line_clamp.0 == line_number {can_be_ellided = true}; // 2.3 can ellide.
-            if webkit_line_clamp.0 < line_number && webkit_line_clamp.0 != 0 {
-                return;
-            }; // 2.4 don't generate the line.
-        }
-        */
 
         if webkit_line_clamp.0 != 0 {
             can_be_ellided = true;

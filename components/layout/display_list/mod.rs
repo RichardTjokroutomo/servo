@@ -684,7 +684,6 @@ impl Fragment {
     ) {
         // NB: The order of painting text components (CSS Text Decoration Module Level 3) is:
         // shadows, underline, overline, text, text-emphasis, and then line-through.
-        println!("-----------------------------------------------");
 
         builder.mark_is_contentful();
 
