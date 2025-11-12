@@ -131,6 +131,7 @@ use crate::positioned::{AbsolutelyPositionedBox, PositioningContext};
 use crate::sizing::{ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult};
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
 use crate::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, SharedStyle};
+use style::properties::LonghandId::WebkitLineClamp;
 
 // From gfxFontConstants.h in Firefox.
 static FONT_SUBSCRIPT_OFFSET_RATIO: f32 = 0.20;
@@ -741,6 +742,9 @@ pub(super) struct InlineFormattingContextLayout<'layout_data> {
     /// are laying out. This is used to propagate baselines to the ancestors of
     /// `display: inline-block` elements and table content.
     baselines: Baselines,
+
+    /// the number of lines (cumulative) the IFC has.
+    number_of_lines: i32,
 }
 
 impl InlineFormattingContextLayout<'_> {
@@ -901,13 +905,13 @@ impl InlineFormattingContextLayout<'_> {
 
         // Finally we finish the line itself and convert all of the LineItems into
         // fragments.
-        self.finish_current_line_and_reset(true /* last_line_or_forced_line_break */);
+        self.finish_current_line_and_reset(true /* last_line_or_forced_line_break */, true);
     }
 
     /// Finish layout of all inline boxes for the current line. This will gather all
     /// [`LineItem`]s and turn them into [`Fragment`]s, then reset the
     /// [`InlineFormattingContextLayout`] preparing it for laying out a new line.
-    fn finish_current_line_and_reset(&mut self, last_line_or_forced_line_break: bool) {
+    fn finish_current_line_and_reset(&mut self, last_line_or_forced_line_break: bool, processing_last_line: bool) {
         let whitespace_trimmed = self.current_line.trim_trailing_whitespace();
         let (inline_start_position, justification_adjustment) = self
             .calculate_current_line_inline_start_and_justification_adjustment(
@@ -972,6 +976,7 @@ impl InlineFormattingContextLayout<'_> {
             inline: inline_start_position,
         };
 
+        self.number_of_lines += 1;
         let baseline_offset = effective_block_advance.find_baseline_offset();
         let start_positioning_context_length = self.positioning_context.len();
         let fragments = LineItemLayout::layout_line_items(
@@ -981,6 +986,8 @@ impl InlineFormattingContextLayout<'_> {
             &effective_block_advance,
             justification_adjustment,
             is_phantom_line,
+            self.number_of_lines,
+            processing_last_line,
         );
 
         if !is_phantom_line {
@@ -1510,7 +1517,7 @@ impl InlineFormattingContextLayout<'_> {
 
     fn process_line_break(&mut self, forced_line_break: bool) {
         self.current_line_segment.trim_leading_whitespace();
-        self.finish_current_line_and_reset(forced_line_break);
+        self.finish_current_line_and_reset(forced_line_break, false);
     }
 
     pub(super) fn unbreakable_segment_fits_on_line(&mut self) -> bool {
@@ -1547,7 +1554,15 @@ impl InlineFormattingContextLayout<'_> {
         };
 
         if self.new_potential_line_size_causes_line_break(&potential_line_size) {
-            self.process_line_break(false /* forced_line_break */);
+            let line_clamp_number = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
+            if line_clamp_number.0 == 0 {
+                self.process_line_break(false);
+            }
+            else {
+                if self.number_of_lines < line_clamp_number.0 - 1 { // minus one because we start from zero
+                    self.process_line_break(false /* forced_line_break */);
+                }
+            }
         }
         self.commit_current_segment_to_line();
     }
@@ -1798,6 +1813,7 @@ impl InlineFormattingContext {
             white_space_collapse: style_text.white_space_collapse,
             text_wrap_mode: style_text.text_wrap_mode,
             baselines: Baselines::default(),
+            number_of_lines: 0,
         };
 
         // FIXME(pcwalton): This assumes that margins never collapse through inline formatting
