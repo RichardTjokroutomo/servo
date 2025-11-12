@@ -232,7 +232,7 @@ pub struct Font {
 
     shaper: OnceLock<Shaper>,
     cached_shape_data: RwLock<CachedShapeData>,
-    font_instance_key: RwLock<FxHashMap<RenderingGroupId, FontInstanceKey>>,
+    pub font_instance_key: RwLock<FxHashMap<RenderingGroupId, FontInstanceKey>>,
 
     /// If this is a synthesized small caps font, then this font reference is for
     /// the version of the font used to replace lowercase ASCII letters. It's up

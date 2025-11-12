@@ -38,6 +38,11 @@ use style::properties::LonghandId::WebkitLineClamp;
 use style::
 computed_values::overflow_x::T as Overflow_X;
 
+
+use std::sync::RwLockReadGuard;
+use rustc_hash::FxHashMap;
+use base::id::RenderingGroupId;
+
 pub(super) struct LineMetrics {
     /// The block offset of the line start in the containing
     /// [`crate::flow::InlineFormattingContext`].
@@ -704,13 +709,17 @@ impl LineItemLayout<'_, '_> {
             }
 
             // 2. insert ellipsis fragment
+            let font_instance_map = 
+            overflow_marker_font.font_instance_key.read();
+
+            let Some(instance_key) = font_instance_map.get(&self.layout.layout_context.rendering_group_id) else {todo!()};
             self.current_state.fragments.push((
                 Fragment::Text(ArcRefCell::new(TextFragment {
                     base: text_item.base_fragment_info.into(),
                     inline_styles: self.layout.ifc.shared_inline_styles.clone(),
                     rect: PhysicalRect::zero(),
                     font_metrics: overflow_marker_font.metrics.clone(),
-                    font_key: self.layout.ifc.font_metrics[0].key,
+                    font_key: *instance_key,
                     glyphs: vec![overflow_marker_textrun_segment.runs[0].glyph_store.clone()],
                     justification_adjustment: self.justification_adjustment,
                     selection_range: text_item.selection_range,
