@@ -812,7 +812,7 @@ impl LineItemLayout<'_, '_> {
         // According to spec # 1, we should use the styling of the block.
         // In the context of Servo, this corresponds to the IFC of current `TextRunSegment`.
         let overflow_marker_font_context = &self.layout.layout_context.font_context;
-        let overflow_marker_rendering_group_id = self.layout.layout_context.rendering_group_id;
+        let overflow_marker_painter_id = self.layout.layout_context.painter_id;
 
         let overflow_marker_font_group = overflow_marker_font_context
             .font_group(self.layout.containing_block.style.clone().clone_font());
@@ -828,7 +828,7 @@ impl LineItemLayout<'_, '_> {
         };
 
         let overflow_font_instance_key = overflow_marker_font.key(
-            overflow_marker_rendering_group_id,
+            overflow_marker_painter_id,
             overflow_marker_font_context,
         );
         overflow_marker_font_cache.push(FontKeyAndMetrics {
