@@ -826,9 +826,7 @@ impl LineItemLayout<'_, '_> {
             None,
             None,
             None,
-        ) else {
-            return None;
-        };
+        )?;
 
         let overflow_font_instance_key =
             overflow_marker_font.key(overflow_marker_painter_id, overflow_marker_font_context);
