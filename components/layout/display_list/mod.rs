@@ -1644,6 +1644,7 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn glyphs(
     glyph_runs: &[Arc<GlyphStore>],
     mut baseline_origin: PhysicalPoint<Au>,
