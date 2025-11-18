@@ -640,7 +640,7 @@ impl LineItemLayout<'_, '_> {
                 overflow_marker_textrun_segment,
                 overflow_marker_font,
                 overflow_font_instance_key,
-            )) = self.form_overflow_marker(&"\u{2026}")
+            )) = self.form_overflow_marker("\u{2026}")
             else {
                 todo!()
             };
@@ -681,7 +681,7 @@ impl LineItemLayout<'_, '_> {
                         justification_adjustment: self.justification_adjustment,
                         selection_range: text_item.selection_range,
                         parent_width: self.layout.containing_block.size.inline,
-                        overflow_marker_width: overflow_marker_width,
+                        overflow_marker_width,
                         contains_first_character_of_the_line: first_text_item_of_the_line,
                         inline_offset: original_inline_advance,
                     })),
