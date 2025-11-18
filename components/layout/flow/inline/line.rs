@@ -820,7 +820,7 @@ impl LineItemLayout<'_, '_> {
         let overflow_marker_font_group = overflow_marker_font_context
             .font_group(self.layout.containing_block.style.clone().clone_font());
 
-        let Some(overflow_marker_font) = overflow_marker_font_group.write().find_by_codepoint(
+        let overflow_marker_font = overflow_marker_font_group.write().find_by_codepoint(
             overflow_marker_font_context,
             overflow_marker_char,
             None,
