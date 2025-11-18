@@ -636,8 +636,11 @@ impl LineItemLayout<'_, '_> {
                     !is_last_textrun))
         {
             // create ellipsis text fragment & its bounding box
-            let Some((overflow_marker_textrun_segment, overflow_marker_font, overflow_font_instance_key)) =
-                self.form_overflow_marker(&"\u{2026}")
+            let Some((
+                overflow_marker_textrun_segment,
+                overflow_marker_font,
+                overflow_font_instance_key,
+            )) = self.form_overflow_marker(&"\u{2026}")
             else {
                 todo!()
             };
@@ -769,7 +772,7 @@ impl LineItemLayout<'_, '_> {
         let start_corner = LogicalVec2 {
             inline: inline_start,
             block: self.current_state.baseline_offset -
-                overflow_marker_font.metrics.ascent - 
+                overflow_marker_font.metrics.ascent -
                 self.current_state.parent_offset.block,
         };
         let content_rect = LogicalRect {
@@ -827,10 +830,8 @@ impl LineItemLayout<'_, '_> {
             return None;
         };
 
-        let overflow_font_instance_key = overflow_marker_font.key(
-            overflow_marker_painter_id,
-            overflow_marker_font_context,
-        );
+        let overflow_font_instance_key =
+            overflow_marker_font.key(overflow_marker_painter_id, overflow_marker_font_context);
         overflow_marker_font_cache.push(FontKeyAndMetrics {
             metrics: overflow_marker_font.metrics.clone(),
             key: overflow_font_instance_key,
@@ -868,7 +869,11 @@ impl LineItemLayout<'_, '_> {
         );
 
         // return
-        Some((overflow_marker_textrun_segment, overflow_marker_font, overflow_font_instance_key))
+        Some((
+            overflow_marker_textrun_segment,
+            overflow_marker_font,
+            overflow_font_instance_key,
+        ))
     }
 
     fn layout_atomic(&mut self, atomic: AtomicLineItem) {
