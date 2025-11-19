@@ -749,7 +749,7 @@ impl Fragment {
         let include_whitespace =
             fragment.has_selection() || text_decorations.iter().any(|item| !item.line.is_empty());
 
-        let mut glyphs;
+        let glyphs;
 
         if fragment.can_be_ellided {
             glyphs = glyphs_ellipsis(
@@ -1705,7 +1705,6 @@ fn glyphs_ellipsis(
     }
     glyphs
 }
-
 
 fn glyphs_normal(
     glyph_runs: &[Arc<GlyphStore>],
