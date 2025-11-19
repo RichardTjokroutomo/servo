@@ -749,16 +749,27 @@ impl Fragment {
         let include_whitespace =
             fragment.has_selection() || text_decorations.iter().any(|item| !item.line.is_empty());
 
-        let glyphs = glyphs(
-            &fragment.glyphs,
-            baseline_origin,
-            fragment.justification_adjustment,
-            include_whitespace,
-            fragment.parent_width,
-            fragment.overflow_marker_width,
-            fragment.contains_first_character_of_the_line,
-            fragment.inline_offset,
-        );
+        let mut glyphs;
+
+        if fragment.can_be_ellided {
+            glyphs = glyphs_ellipsis(
+                &fragment.glyphs,
+                baseline_origin,
+                fragment.justification_adjustment,
+                include_whitespace,
+                fragment.parent_width,
+                fragment.overflow_marker_width,
+                fragment.contains_first_character_of_the_line,
+                fragment.inline_offset,
+            );
+        } else {
+            glyphs = glyphs_normal(
+                &fragment.glyphs,
+                baseline_origin,
+                fragment.justification_adjustment,
+                include_whitespace,
+            );
+        }
         if glyphs.is_empty() {
             return;
         }
@@ -1645,7 +1656,7 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn glyphs(
+fn glyphs_ellipsis(
     glyph_runs: &[Arc<GlyphStore>],
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
@@ -1688,6 +1699,41 @@ fn glyphs(
             if glyph.char_is_word_separator() {
                 baseline_origin.x += justification_adjustment;
                 total_advance += justification_adjustment;
+            }
+            baseline_origin.x += glyph.advance();
+        }
+    }
+    glyphs
+}
+
+
+fn glyphs_normal(
+    glyph_runs: &[Arc<GlyphStore>],
+    mut baseline_origin: PhysicalPoint<Au>,
+    justification_adjustment: Au,
+    include_whitespace: bool,
+) -> Vec<wr::GlyphInstance> {
+    use fonts_traits::ByteIndex;
+    use range::Range;
+
+    let mut glyphs = vec![];
+    for run in glyph_runs {
+        for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
+            if !run.is_whitespace() || include_whitespace {
+                let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
+                let point = units::LayoutPoint::new(
+                    baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
+                    baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
+                );
+                let glyph = wr::GlyphInstance {
+                    index: glyph.id(),
+                    point,
+                };
+                glyphs.push(glyph);
+            }
+
+            if glyph.char_is_word_separator() {
+                baseline_origin.x += justification_adjustment;
             }
             baseline_origin.x += glyph.advance();
         }

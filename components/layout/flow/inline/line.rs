@@ -685,6 +685,7 @@ impl LineItemLayout<'_, '_> {
                         overflow_marker_width,
                         contains_first_character_of_the_line: first_text_item_of_the_line,
                         inline_offset: original_inline_advance,
+                        can_be_ellided: true,
                     })),
                     content_rect,
                 ));
@@ -705,6 +706,7 @@ impl LineItemLayout<'_, '_> {
                     overflow_marker_width: (Au(0), Au(0)),
                     contains_first_character_of_the_line: false,
                     inline_offset: original_inline_advance,
+                    can_be_ellided: false,
                 })),
                 overflow_marker_content_rect,
             ));
@@ -724,6 +726,7 @@ impl LineItemLayout<'_, '_> {
                     overflow_marker_width: (Au(0), Au(0)),
                     contains_first_character_of_the_line: first_text_item_of_the_line,
                     inline_offset: original_inline_advance,
+                    can_be_ellided: false,
                 })),
                 content_rect,
             ));
