@@ -10,7 +10,6 @@ use itertools::Either;
 use range::Range;
 use style::Zero;
 use style::computed_values::overflow_x::T as Overflow_X;
-use style::computed_values::text_wrap_mode::T as TextWrap;
 use style::computed_values::position::T as Position;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
@@ -585,7 +584,7 @@ impl LineItemLayout<'_, '_> {
         let parent_style = self.layout.ifc.shared_inline_styles.style.borrow();
         match parent_style.get_text().text_overflow.second {
             TextOverflowSide::Ellipsis => {
-                if parent_style.get_box().overflow_x == Overflow_X::Hidden && parent_style.get_inherited_text().text_wrap_mode == TextWrap::Nowrap {
+                if parent_style.get_box().overflow_x == Overflow_X::Hidden {
                     can_be_ellided = true;
                 }
             },
@@ -706,7 +705,7 @@ impl LineItemLayout<'_, '_> {
                     overflow_marker_width: (Au(0), Au(0)),
                     contains_first_character_of_the_line: false,
                     inline_offset: original_inline_advance,
-                    can_be_ellided: false,
+                    can_be_ellided: true,
                 })),
                 overflow_marker_content_rect,
             ));
