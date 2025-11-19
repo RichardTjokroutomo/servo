@@ -753,14 +753,10 @@ impl Fragment {
 
         if fragment.can_be_ellided {
             glyphs = glyphs_ellipsis(
-                &fragment.glyphs,
+                &fragment,
                 baseline_origin,
                 fragment.justification_adjustment,
                 include_whitespace,
-                fragment.parent_width,
-                fragment.overflow_marker_width,
-                fragment.contains_first_character_of_the_line,
-                fragment.inline_offset,
             );
         } else {
             glyphs = glyphs_normal(
@@ -1655,19 +1651,21 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn glyphs_ellipsis(
-    glyph_runs: &[Arc<GlyphStore>],
+    fragment: &TextFragment,
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
     include_whitespace: bool,
-    containing_block_width: Au,
-    text_clip_boundaries: (Au, Au), // TODO: handle left side ellipsis.
-    contains_first_character_of_the_line: bool,
-    inline_offset: Au,
 ) -> Vec<wr::GlyphInstance> {
     use fonts_traits::ByteIndex;
     use range::Range;
+
+    // Declare some local variables
+    let glyph_runs = &fragment.glyphs;
+    let containing_block_width = fragment.parent_width;
+    let text_clip_boundaries = fragment.overflow_marker_width;
+    let contains_first_character_of_the_line = fragment.contains_first_character_of_the_line;
+    let inline_offset = fragment.inline_offset;
 
     let mut glyphs = vec![];
     let mut total_advance = inline_offset;
@@ -1686,7 +1684,7 @@ fn glyphs_ellipsis(
                     index: glyph.id(),
                     point,
                 };
-                // first glyph must never be ellided. otherwise, check if it's time to crop.
+                // First glyph must never be ellided. otherwise, check if it's time to crop.
                 // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
                 // <https://www.w3.org/TR/css-ui-3/#text-overflow>
                 if total_advance <= max_total_advance ||
