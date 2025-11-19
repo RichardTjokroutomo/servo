@@ -570,20 +570,13 @@ impl LineItemLayout<'_, '_> {
         let first_text_item_of_the_line = original_inline_advance == Au(0);
 
         // Check if we can ellide the current `TextRunLineItem`
-        let mut can_be_ellided = false; // TODO: add more logic later on.
-
         // 1. Check the parent style's text-overflow property.
         let parent_style = self.layout.ifc.shared_inline_styles.style.borrow();
-        match parent_style.get_text().text_overflow.second {
-            TextOverflowSide::Ellipsis => {
-                if parent_style.get_box().overflow_x == Overflow_X::Hidden {
-                    // TODO: overflow should be anything but `visible`. Fix the logic in the future.
-                    can_be_ellided = true;
-                }
-            },
-            TextOverflowSide::Clip => {}, // Do nothing!
-            _ => {},                      // TODO: handle strings.
-        }
+        let can_be_ellided = match parent_style.get_text().text_overflow.second {
+            TextOverflowSide::Ellipsis => parent_style.get_box().overflow_x != Overflow_X::Visible,
+            TextOverflowSide::Clip => false,
+            TextOverflowSide::String(_) => todo!(),
+        };
 
         let mut number_of_justification_opportunities = 0;
         let mut inline_advance = text_item
