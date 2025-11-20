@@ -749,23 +749,12 @@ impl Fragment {
         let include_whitespace =
             fragment.has_selection() || text_decorations.iter().any(|item| !item.line.is_empty());
 
-        let glyphs;
-
-        if fragment.can_be_ellided {
-            glyphs = glyphs_ellipsis(
-                &fragment,
-                baseline_origin,
-                fragment.justification_adjustment,
-                include_whitespace,
-            );
-        } else {
-            glyphs = glyphs_normal(
-                &fragment.glyphs,
-                baseline_origin,
-                fragment.justification_adjustment,
-                include_whitespace,
-            );
-        }
+        let glyphs= glyphs(
+            &fragment,
+            baseline_origin,
+            fragment.justification_adjustment,
+            include_whitespace,
+        );
         if glyphs.is_empty() {
             return;
         }
@@ -1651,7 +1640,7 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
-fn glyphs_ellipsis(
+fn glyphs(
     fragment: &TextFragment,
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
@@ -1684,12 +1673,17 @@ fn glyphs_ellipsis(
                     index: glyph.id(),
                     point,
                 };
-                // First glyph must never be ellided. otherwise, check if it's time to crop.
-                // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
-                // <https://www.w3.org/TR/css-ui-3/#text-overflow>
-                if total_advance <= max_total_advance ||
+                if fragment.can_be_ellided {
+                    // First glyph must never be ellided. otherwise, check if it's time to crop.
+                    // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
+                    // <https://www.w3.org/TR/css-ui-3/#text-overflow>
+                    if total_advance <= max_total_advance ||
                     (glyphs.is_empty() && contains_first_character_of_the_line)
                 {
+                    glyphs.push(glyph);
+                }
+                }
+                else {
                     glyphs.push(glyph);
                 }
             }
@@ -1704,39 +1698,6 @@ fn glyphs_ellipsis(
     glyphs
 }
 
-fn glyphs_normal(
-    glyph_runs: &[Arc<GlyphStore>],
-    mut baseline_origin: PhysicalPoint<Au>,
-    justification_adjustment: Au,
-    include_whitespace: bool,
-) -> Vec<wr::GlyphInstance> {
-    use fonts_traits::ByteIndex;
-    use range::Range;
-
-    let mut glyphs = vec![];
-    for run in glyph_runs {
-        for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
-            if !run.is_whitespace() || include_whitespace {
-                let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
-                let point = units::LayoutPoint::new(
-                    baseline_origin.x.to_f32_px() + glyph_offset.x.to_f32_px(),
-                    baseline_origin.y.to_f32_px() + glyph_offset.y.to_f32_px(),
-                );
-                let glyph = wr::GlyphInstance {
-                    index: glyph.id(),
-                    point,
-                };
-                glyphs.push(glyph);
-            }
-
-            if glyph.char_is_word_separator() {
-                baseline_origin.x += justification_adjustment;
-            }
-            baseline_origin.x += glyph.advance();
-        }
-    }
-    glyphs
-}
 
 // TODO: The implementation here does not account for multiple glyph runs properly.
 fn glyphs_advance_by_index(
