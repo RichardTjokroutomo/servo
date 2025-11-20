@@ -1653,9 +1653,7 @@ fn glyphs(
     let glyph_runs = &fragment.glyphs;
     let containing_block_width = fragment.overflow_metadata.parent_width;
     let text_clip_boundaries = fragment.overflow_metadata.overflow_marker_width;
-    let contains_first_character_of_the_line = fragment
-        .overflow_metadata
-        .contains_first_character_of_the_line;
+    let contains_first_character_of_the_line = fragment.overflow_metadata.contains_first_character_of_the_line;
     let inline_offset = fragment.overflow_metadata.inline_offset;
 
     let mut glyphs = vec![];
@@ -1664,7 +1662,8 @@ fn glyphs(
 
     for run in glyph_runs {
         for glyph in run.iter_glyphs_for_byte_range(&Range::new(ByteIndex(0), run.len())) {
-            total_advance += glyph.advance();
+            let current_advance = glyph.advance();
+            total_advance += current_advance;
             if !run.is_whitespace() || include_whitespace {
                 let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
                 let point = units::LayoutPoint::new(
@@ -1675,16 +1674,13 @@ fn glyphs(
                     index: glyph.id(),
                     point,
                 };
-                if fragment.overflow_metadata.can_be_ellided {
-                    // First glyph must never be ellided. otherwise, check if it's time to crop.
-                    // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
-                    // <https://www.w3.org/TR/css-ui-3/#text-overflow>
-                    if total_advance <= max_total_advance ||
-                        (glyphs.is_empty() && contains_first_character_of_the_line)
-                    {
-                        glyphs.push(glyph);
-                    }
-                } else {
+
+                // First glyph must never be ellided. otherwise, check if it's time to crop.
+                // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
+                // <https://www.w3.org/TR/css-ui-3/#text-overflow>
+                if !fragment.overflow_metadata.can_be_ellided ||
+                total_advance <= max_total_advance ||
+                (glyphs.is_empty() && contains_first_character_of_the_line) {
                     glyphs.push(glyph);
                 }
             }
@@ -1693,7 +1689,7 @@ fn glyphs(
                 baseline_origin.x += justification_adjustment;
                 total_advance += justification_adjustment;
             }
-            baseline_origin.x += glyph.advance();
+            baseline_origin.x += current_advance;
         }
     }
     glyphs
