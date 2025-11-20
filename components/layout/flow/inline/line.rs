@@ -7,6 +7,7 @@ use bitflags::bitflags;
 use euclid::Point2D;
 use fonts::{ByteIndex, FontMetrics, FontRef, GlyphStore, ShapingFlags, ShapingOptions};
 use itertools::Either;
+use log::error;
 use range::Range;
 use style::Zero;
 use style::computed_values::overflow_x::T as Overflow_X;
@@ -25,13 +26,14 @@ use super::{InlineFormattingContextLayout, LineBlockSizes, SharedInlineStyles, l
 use crate::cell::ArcRefCell;
 use crate::flow::inline::FontKeyAndMetrics;
 use crate::flow::inline::text_run::TextRunSegment;
-use crate::fragment_tree::{BaseFragmentInfo, BoxFragment, Fragment, TextFragment};
+use crate::fragment_tree::{
+    BaseFragmentInfo, BoxFragment, Fragment, OverflowMarkerData, TextFragment,
+};
 use crate::geom::{LogicalRect, LogicalVec2, PhysicalRect, ToLogical};
 use crate::positioned::{
     AbsolutelyPositionedBox, PositioningContext, PositioningContextLength, relative_adjustement,
 };
 use crate::{ContainingBlock, ContainingBlockSize};
-use log::error;
 
 pub(super) struct LineMetrics {
     /// The block offset of the line start in the containing
@@ -218,9 +220,7 @@ impl LineItemLayout<'_, '_> {
             .iter()
             .map(|item| {
                 let level = match item {
-                    LineItem::TextRun(_, text_run) => {
-                        text_run.bidi_level
-                    },
+                    LineItem::TextRun(_, text_run) => text_run.bidi_level,
                     // TODO: This level needs either to be last_level, or if there were
                     // unicode characters inserted for the inline box, we need to get the
                     // level from them.
@@ -651,6 +651,14 @@ impl LineItemLayout<'_, '_> {
             if !(overflow_marker_content_rect.start_corner.inline == original_inline_advance &&
                 original_inline_advance != Au(0))
             {
+                let text_metadata = OverflowMarkerData::new(
+                    self.layout.containing_block.size.inline,
+                    overflow_marker_width,
+                    first_text_item_of_the_line,
+                    original_inline_advance,
+                    true,
+                );
+
                 self.current_state.fragments.push((
                     Fragment::Text(ArcRefCell::new(TextFragment {
                         base: text_item.base_fragment_info.into(),
@@ -661,17 +669,20 @@ impl LineItemLayout<'_, '_> {
                         glyphs: text_item.text.clone(),
                         justification_adjustment: self.justification_adjustment,
                         selection_range: text_item.selection_range,
-                        parent_width: self.layout.containing_block.size.inline,
-                        overflow_marker_width,
-                        contains_first_character_of_the_line: first_text_item_of_the_line,
-                        inline_offset: original_inline_advance,
-                        can_be_ellided: true,
+                        overflow_metadata: text_metadata,
                     })),
                     content_rect,
                 ));
             }
 
             // 2. Insert ellipsis fragment
+            let ellipsis_metadata = OverflowMarkerData::new(
+                self.layout.containing_block.size.inline,
+                (Au(0), Au(0)),
+                first_text_item_of_the_line,
+                original_inline_advance,
+                true,
+            );
             self.current_state.fragments.push((
                 Fragment::Text(ArcRefCell::new(TextFragment {
                     base: text_item.base_fragment_info.into(),
@@ -682,16 +693,20 @@ impl LineItemLayout<'_, '_> {
                     glyphs: vec![overflow_marker_textrun_segment.runs[0].glyph_store.clone()],
                     justification_adjustment: self.justification_adjustment,
                     selection_range: text_item.selection_range,
-                    parent_width: self.layout.containing_block.size.inline,
-                    overflow_marker_width: (Au(0), Au(0)),
-                    contains_first_character_of_the_line: false,
-                    inline_offset: original_inline_advance,
-                    can_be_ellided: true,
+                    overflow_metadata: ellipsis_metadata,
                 })),
                 overflow_marker_content_rect,
             ));
         } else {
             // Insert text fragment
+            let text_metadata = OverflowMarkerData::new(
+                self.layout.containing_block.size.inline,
+                (Au(0), Au(0)),
+                first_text_item_of_the_line,
+                original_inline_advance,
+                false,
+            );
+
             self.current_state.fragments.push((
                 Fragment::Text(ArcRefCell::new(TextFragment {
                     base: text_item.base_fragment_info.into(),
@@ -702,11 +717,7 @@ impl LineItemLayout<'_, '_> {
                     glyphs: text_item.text.clone(),
                     justification_adjustment: self.justification_adjustment,
                     selection_range: text_item.selection_range,
-                    parent_width: self.layout.containing_block.size.inline,
-                    overflow_marker_width: (Au(0), Au(0)),
-                    contains_first_character_of_the_line: first_text_item_of_the_line,
-                    inline_offset: original_inline_advance,
-                    can_be_ellided: false,
+                    overflow_metadata: text_metadata,
                 })),
                 content_rect,
             ));
@@ -720,14 +731,16 @@ impl LineItemLayout<'_, '_> {
         original_inline_advance: Au,
         overflow_marker_font: FontRef,
     ) -> (LogicalRect<Au>, TextRunSegment, TextRunLineItem) {
-        // 1. Find the inline start corner (if horizontal, then starting x pos), denoted as `inline_start`
+        // 1. Find the inline start corner (if horizontal, then starting x pos), denoted as `inline_start`.
         // `inline_target` is the minimum value for `inline_start`.
         // The inline start corner of the ellipsis bounding box must be between
         // `inline_target` & `self.layout.containing_block.size.inline`.
+        // With the current implementation,
+        // `overflow_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
         let inline_target = self.layout.containing_block.size.inline -
             overflow_marker_textrun_segment.runs[0]
                 .glyph_store
-                .total_advance(); // With the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
+                .total_advance();
         let mut inline_start = original_inline_advance;
         let mut index = 0;
         let mut found = false;
@@ -751,7 +764,7 @@ impl LineItemLayout<'_, '_> {
 
         // 2. Create the bounding box of the ellipsis text fragment.
         // When computing `start_corner.block`,
-        // I used the same logic used in `LineItemLayout::layout_text_run`,
+        // This uses the same logic used in `LineItemLayout::layout_text_run`,
         // the difference is that I am using the `ascent` of the IFC.
         let start_corner = LogicalVec2 {
             inline: inline_start,
@@ -836,8 +849,11 @@ impl LineItemLayout<'_, '_> {
         let overflow_marker_flags = ShapingFlags::empty();
 
         let overflow_marker_shaping_options = ShapingOptions {
-            letter_spacing: None, // CSS specs doesn't mention anything, but for Firefox, even for `text-overflow: string`, any string with more than one character is considered as one, so `letter-spacing` is irrelevant.
-            word_spacing: Au(0),  // No word spacing.
+            // CSS specs doesn't mention anything, but for Firefox, even for `text-overflow: <string>`,
+            // any string with more than one character is considered as one, so `letter-spacing`
+            // is irrelevant.
+            letter_spacing: None,
+            word_spacing: Au(0), // No word spacing.
             script: overflow_marker_textrun_segment.script,
             flags: overflow_marker_flags,
         };
