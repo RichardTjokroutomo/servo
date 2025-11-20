@@ -31,6 +31,7 @@ use crate::positioned::{
     AbsolutelyPositionedBox, PositioningContext, PositioningContextLength, relative_adjustement,
 };
 use crate::{ContainingBlock, ContainingBlockSize};
+use log::error;
 
 pub(super) struct LineMetrics {
     /// The block offset of the line start in the containing
@@ -621,7 +622,8 @@ impl LineItemLayout<'_, '_> {
                 overflow_font_instance_key,
             )) = self.form_overflow_marker("\u{2026}")
             else {
-                todo!()
+                error!("Ellipsis Glyph not found, and no fallback has been implemented yet!");
+                return;
             };
             let (overflow_marker_content_rect, overflow_marker_textrun_segment, text_item) = self
                 .form_overflow_marker_bounding_box(
