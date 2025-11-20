@@ -77,13 +77,32 @@ pub(crate) struct TextFragment {
     pub selection_range: Option<ServoRange<ByteIndex>>,
 
     /// Relevant fields used for handling `text-overflow: ellipsis`
+    /// 1. The width of the containing block. We need this later to check where to clip the text during 
+    /// display list construction.
     pub parent_width: Au,
 
-    // The width of left & right text overflow marker. CSS specs refers to them as `first` & `second`.
+    // 2. The width of left & right text overflow marker. CSS specs refers to them as `first` & `second`.
     // When `text-overflow: ellipsis`, right clip is the width of the ellipsis glyph.
     pub overflow_marker_width: (Au, Au),
+
+    /// 3. Per the CSS specification <https://drafts.csswg.org/css-overflow/#text-overflow>,
+    /// "The first character or atomic inline-level element on a line must be clipped rather than ellipsed."
+    /// Therefore, this value is needed during display list construction. If we're still processing the first
+    /// character, then we clip instead of ellide it.
     pub contains_first_character_of_the_line: bool,
+
+    /// 4. A line can contain more than one TextFragment. 
+    /// For example, consider the case 中文english. In this case, there will be two text fragments.
+    /// Suppose that the `english` TextFragment is the one that will be ellided. 
+    /// In this case, we need to know the total width of the preceeding TextFragment(s)
+    /// in order to know where to clip the `english` TextFragment.
+    /// In our case, `inline_offset` is simply the total advance （width) of `中文` TextFragment.
     pub inline_offset: Au,
+
+    /// 5. Can this TextFragment be ellided? 
+    /// This information will be useful during display list construction.
+    /// If `can_be_ellided` is true, then we add our clipping logic. 
+    /// Else, Servo will handle it as usual.
     pub can_be_ellided: bool,
 }
 

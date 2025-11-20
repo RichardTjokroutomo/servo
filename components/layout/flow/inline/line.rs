@@ -213,13 +213,11 @@ impl LineItemLayout<'_, '_> {
 
     pub(super) fn layout(&mut self, mut line_items: Vec<LineItem>) -> Vec<Fragment> {
         let mut last_level = Level::ltr();
-        let mut total_textrun = 0;
         let levels: Vec<_> = line_items
             .iter()
             .map(|item| {
                 let level = match item {
                     LineItem::TextRun(_, text_run) => {
-                        total_textrun += 1;
                         text_run.bidi_level
                     },
                     // TODO: This level needs either to be last_level, or if there were
@@ -262,7 +260,6 @@ impl LineItemLayout<'_, '_> {
             Either::Right(line_items.into_iter().rev())
         };
 
-        let mut current_textrun = 0;
         for item in line_item_iterator.into_iter().by_ref() {
             // When preparing to lay out a new line item, start and end inline boxes, so that the current
             // inline box state reflects the item's parent. Items in the line are not necessarily in tree
@@ -285,8 +282,7 @@ impl LineItemLayout<'_, '_> {
                         .insert(LineLayoutInlineContainerFlags::HAD_INLINE_END_PBM);
                 },
                 LineItem::TextRun(_, text_run) => {
-                    current_textrun += 1;
-                    self.layout_text_run(text_run, current_textrun == total_textrun);
+                    self.layout_text_run(text_run);
                 },
                 LineItem::Atomic(_, atomic) => self.layout_atomic(atomic),
                 LineItem::AbsolutelyPositioned(_, absolute) => self.layout_absolute(absolute),
@@ -560,7 +556,7 @@ impl LineItemLayout<'_, '_> {
         }
     }
 
-    fn layout_text_run(&mut self, text_item: TextRunLineItem, is_last_textrun: bool) {
+    fn layout_text_run(&mut self, text_item: TextRunLineItem) {
         if text_item.text.is_empty() {
             return;
         }
@@ -615,11 +611,8 @@ impl LineItemLayout<'_, '_> {
 
         // Create & insert text fragment to vector
         if can_be_ellided &&
-            ((self.current_state.inline_advance > self.layout.containing_block.size.inline &&
-                original_inline_advance < self.layout.containing_block.size.inline) ||
-                (self.current_state.inline_advance ==
-                    self.layout.containing_block.size.inline &&
-                    !is_last_textrun))
+            (self.current_state.inline_advance > self.layout.containing_block.size.inline &&
+                original_inline_advance < self.layout.containing_block.size.inline)
         {
             // Create ellipsis text fragment & its bounding box
             let Some((
