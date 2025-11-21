@@ -750,7 +750,7 @@ impl Fragment {
             fragment.has_selection() || text_decorations.iter().any(|item| !item.line.is_empty());
 
         let glyphs = glyphs(
-            &fragment,
+            fragment,
             baseline_origin,
             fragment.justification_adjustment,
             include_whitespace,
@@ -1653,7 +1653,9 @@ fn glyphs(
     let glyph_runs = &fragment.glyphs;
     let containing_block_width = fragment.overflow_metadata.parent_width;
     let text_clip_boundaries = fragment.overflow_metadata.overflow_marker_width;
-    let contains_first_character_of_the_line = fragment.overflow_metadata.contains_first_character_of_the_line;
+    let contains_first_character_of_the_line = fragment
+        .overflow_metadata
+        .contains_first_character_of_the_line;
     let inline_offset = fragment.overflow_metadata.inline_offset;
 
     let mut glyphs = vec![];
@@ -1679,8 +1681,9 @@ fn glyphs(
                 // The first character or atomic inline-level element on a line must be clipped rather than ellipsed.
                 // <https://www.w3.org/TR/css-ui-3/#text-overflow>
                 if !fragment.overflow_metadata.can_be_ellided ||
-                total_advance <= max_total_advance ||
-                (glyphs.is_empty() && contains_first_character_of_the_line) {
+                    total_advance <= max_total_advance ||
+                    (glyphs.is_empty() && contains_first_character_of_the_line)
+                {
                     glyphs.push(glyph);
                 }
             }
