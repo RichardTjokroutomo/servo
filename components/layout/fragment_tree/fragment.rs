@@ -99,7 +99,7 @@ pub(crate) struct OverflowMarkerData {
 
     /// A line can contain more than one TextFragment.
     /// For example, consider the case 中文english. In this case, there will be two text fragments.
-    /// Suppose that the `english` TextFragment is the one that will be ellided.
+    /// Suppose that the `english` TextFragment is the one that will be elided.
     /// In this case, we need to know the total width of the preceeding TextFragment(s)
     /// in order to know where to clip the `english` TextFragment.
     /// In our case, `inline_offset` is simply the total advance （width) of `中文` TextFragment.
@@ -107,9 +107,9 @@ pub(crate) struct OverflowMarkerData {
 
     /// Whether this TextFragment can be elided.
     /// This information will be useful during display list construction.
-    /// If `can_be_ellided` is true, then we add our clipping logic.
+    /// If `can_be_elided` is true, then we add our clipping logic.
     /// Else, Servo will handle it as usual.
-    pub can_be_ellided: bool,
+    pub can_be_elided: bool,
 }
 
 #[derive(MallocSizeOf)]
@@ -136,14 +136,14 @@ impl OverflowMarkerData {
         overflow_marker_width: (Au, Au),
         contains_first_character_of_the_line: bool,
         inline_offset: Au,
-        can_be_ellided: bool,
+        can_be_elided: bool,
     ) -> Self {
         Self {
             parent_width,
             overflow_marker_width,
             contains_first_character_of_the_line,
             inline_offset,
-            can_be_ellided,
+            can_be_elided,
         }
     }
 }

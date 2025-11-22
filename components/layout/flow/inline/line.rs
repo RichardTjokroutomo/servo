@@ -569,7 +569,7 @@ impl LineItemLayout<'_, '_> {
         // Check if we can ellide the current `TextRunLineItem`
         // 1. Check the parent style's text-overflow property.
         let parent_style = self.layout.ifc.shared_inline_styles.style.borrow();
-        let can_be_ellided = match parent_style.get_text().text_overflow.second {
+        let can_be_elided = match parent_style.get_text().text_overflow.second {
             TextOverflowSide::Ellipsis => parent_style.get_box().overflow_x != Overflow_X::Visible,
             TextOverflowSide::Clip => false,
             TextOverflowSide::String(_) => todo!(),
@@ -611,7 +611,7 @@ impl LineItemLayout<'_, '_> {
         self.current_state.inline_advance += inline_advance;
 
         // Create & insert text fragment to vector
-        if can_be_ellided &&
+        if can_be_elided &&
             (self.current_state.inline_advance > self.layout.containing_block.size.inline &&
                 original_inline_advance < self.layout.containing_block.size.inline)
         {
@@ -641,10 +641,10 @@ impl LineItemLayout<'_, '_> {
             );
 
             // 1. Insert the text fragment.
-            // But before that, we need to check if the entire text will be ellided.
+            // But before that, we need to check if the entire text will be elided.
             // For example, let's say we have "中文中文english". Then there will be two `TextFragment`s, "中文中文" & "english".
-            // Let's say that the ellided text will be "中文中文..."
-            // Then that would mean the entire "english" `TextFragment` will be ellided, so we don't need to push it.
+            // Let's say that the elided text will be "中文中文..."
+            // Then that would mean the entire "english" `TextFragment` will be elided, so we don't need to push it.
             // An exception is if "english" is the first `TextFragment`, in which case we cannot ellide.
             // "The first character or atomic inline-level element on a line must be clipped rather than ellipsed.""
             // <https://www.w3.org/TR/css-ui-3/#text-overflow>
