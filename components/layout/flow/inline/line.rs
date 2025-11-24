@@ -37,6 +37,8 @@ use style::values::specified::text::TextOverflowSide;
 use style::properties::LonghandId::WebkitLineClamp;
 use style::
 computed_values::overflow_x::T as Overflow_X;
+use style::computed_values::_webkit_box_orient::T as BoxOrient;
+use style::values::specified::box_::DisplayInside;
 
 
 use std::sync::RwLockReadGuard;
@@ -612,8 +614,10 @@ impl LineItemLayout<'_, '_> {
         .borrow()
         .get_box()
         ._webkit_line_clamp;
+        let webkit_box_orient = self.layout.ifc.shared_inline_styles.style.borrow().get_box()._webkit_box_orient;
+        let display_type = self.layout.ifc.shared_inline_styles.style.borrow().get_box().display;
 
-        if webkit_line_clamp.0 != 0 {
+        if (webkit_line_clamp.0 != 0) && (webkit_box_orient == BoxOrient::Vertical) && (display_type.inside() == DisplayInside::WebkitBox) {
             can_be_ellided = true;
         }
         
@@ -657,6 +661,12 @@ impl LineItemLayout<'_, '_> {
         let Some((overflow_marker_textrun_segment, overflow_marker_font)) = self.form_overflow_marker(&"\u{2026}") else {
             todo!()
         };
+
+        // bounding box
+        let mut overflow_marker_total_advance = Au(0);
+        for run in &overflow_marker_textrun_segment.runs {
+            overflow_marker_total_advance += run.glyph_store.total_advance();
+        }
         let (overflow_marker_content_rect, 
             overflow_marker_textrun_segment, 
             text_item) = self.
@@ -671,12 +681,10 @@ impl LineItemLayout<'_, '_> {
         if can_be_ellided 
         && ((self.current_state.inline_advance > self.layout.containing_block.size.inline 
         && original_inline_advance < self.layout.containing_block.size.inline) 
-        || (self.current_state.inline_advance == self.layout.containing_block.size.inline 
-        && !is_last_textrun)
-        || (self.current_state.inline_advance + overflow_marker_textrun_segment.runs[0].glyph_store.total_advance() >= self.layout.containing_block.size.inline // TODO: fix this logic.
-        && webkit_line_clamp.0 == line_number)) {
+        || (self.current_state.inline_advance >= self.layout.containing_block.size.inline - overflow_marker_total_advance
+        && !is_last_textrun && (webkit_line_clamp.0 == line_number || webkit_line_clamp.0 == 0))) {
             // with the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
-            let overflow_marker_width = (Au(0), overflow_marker_textrun_segment.runs[0].glyph_store.total_advance());
+            let overflow_marker_width = (Au(0), overflow_marker_total_advance);
             
             // 1. insert the text fragment.
             // but before that, we need to check if the entire text will be ellided.

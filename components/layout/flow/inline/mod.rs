@@ -132,6 +132,8 @@ use crate::sizing::{ComputeInlineContentSizes, ContentSizes, InlineContentSizesR
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
 use crate::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, SharedStyle};
 use style::properties::LonghandId::WebkitLineClamp;
+use style::computed_values::_webkit_box_orient::T as BoxOrient;
+use style::values::specified::box_::DisplayInside;
 
 // From gfxFontConstants.h in Firefox.
 static FONT_SUBSCRIPT_OFFSET_RATIO: f32 = 0.20;
@@ -1552,16 +1554,25 @@ impl InlineFormattingContextLayout<'_> {
                 .max(&self.current_line_segment.max_block_size)
                 .resolve(),
         };
-
+        
         if self.new_potential_line_size_causes_line_break(&potential_line_size) {
+            // relevant specs: https://www.w3.org/TR/css-overflow-4/#propdef--webkit-line-clamp
             let line_clamp_number = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_line_clamp;
-            if line_clamp_number.0 == 0 {
-                self.process_line_break(false);
+            let webkit_box_orient = self.ifc.shared_inline_styles.style.borrow().get_box()._webkit_box_orient;
+            let display_type = self.ifc.shared_inline_styles.style.borrow().get_box().display;
+
+            if (webkit_box_orient == BoxOrient::Vertical) && (display_type.inside() == DisplayInside::WebkitBox) {
+                if line_clamp_number.0 == 0 {
+                    self.process_line_break(false);
+                }
+                else {
+                    if self.number_of_lines < line_clamp_number.0 - 1 { // minus one because we start from zero
+                        self.process_line_break(false /* forced_line_break */);
+                    }
+                }
             }
             else {
-                if self.number_of_lines < line_clamp_number.0 - 1 { // minus one because we start from zero
-                    self.process_line_break(false /* forced_line_break */);
-                }
+                self.process_line_break(false);
             }
         }
         self.commit_current_segment_to_line();
