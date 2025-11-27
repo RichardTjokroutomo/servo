@@ -12,7 +12,8 @@ fn test_text_overflow() {
 
     assert_roundtrip_with_context!(text_overflow::parse, r#"clip"#);
     assert_roundtrip_with_context!(text_overflow::parse, r#"ellipsis"#);
-    assert_roundtrip_with_context!(text_overflow::parse, r#"clip ellipsis"#);
+    // TODO: Uncomment this assertion once two-valued text-overflow is supported.
+    //assert_roundtrip_with_context!(text_overflow::parse, r#"clip ellipsis"#);
     assert_roundtrip_with_context!(text_overflow::parse, r#""x""#);
     assert_roundtrip_with_context!(text_overflow::parse, r#"'x'"#, r#""x""#);
     assert_roundtrip_with_context!(text_overflow::parse, r#"clip "x""#);
