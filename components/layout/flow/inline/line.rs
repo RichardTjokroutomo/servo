@@ -10,6 +10,7 @@ use itertools::Either;
 use log::error;
 use range::Range;
 use style::Zero;
+use style::computed_values::_webkit_box_orient::T as BoxOrient;
 use style::computed_values::overflow_x::T as Overflow_X;
 use style::computed_values::position::T as Position;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
@@ -17,7 +18,7 @@ use style::computed_values::writing_mode::T as WritingMode;
 use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
 use style::values::generics::length::GenericMargin;
 use style::values::specified::align::AlignFlags;
-use style::values::specified::box_::DisplayOutside;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::values::specified::text::TextOverflowSide;
 use unicode_bidi::{BidiInfo, Level};
 use unicode_script::Script;
@@ -176,6 +177,7 @@ impl LineItemLayout<'_, '_> {
         effective_block_advance: &LineBlockSizes,
         justification_adjustment: Au,
         is_phantom_line: bool,
+        number_of_lines: i32,
     ) -> Vec<Fragment> {
         let baseline_offset = effective_block_advance.find_baseline_offset();
         LineItemLayout {
@@ -194,7 +196,7 @@ impl LineItemLayout<'_, '_> {
             is_phantom_line,
             overflow_indicator_added: false,
         }
-        .layout(line_items)
+        .layout(line_items, number_of_lines)
     }
 
     /// Start and end inline boxes in tree order, so that it reflects the given inline box.
@@ -222,7 +224,11 @@ impl LineItemLayout<'_, '_> {
         }
     }
 
-    pub(super) fn layout(&mut self, mut line_items: Vec<LineItem>) -> Vec<Fragment> {
+    pub(super) fn layout(
+        &mut self,
+        mut line_items: Vec<LineItem>,
+        number_of_lines: i32,
+    ) -> Vec<Fragment> {
         let mut last_level = Level::ltr();
         let mut total_text_run = 0;
         let levels: Vec<_> = line_items
@@ -297,7 +303,11 @@ impl LineItemLayout<'_, '_> {
                 },
                 LineItem::TextRun(_, text_run) => {
                     current_text_run += 1;
-                    self.layout_text_run(text_run, current_text_run == total_text_run)
+                    self.layout_text_run(
+                        text_run,
+                        current_text_run == total_text_run,
+                        number_of_lines,
+                    )
                 },
                 LineItem::Atomic(_, atomic) => self.layout_atomic(atomic),
                 LineItem::AbsolutelyPositioned(_, absolute) => self.layout_absolute(absolute),
@@ -571,7 +581,12 @@ impl LineItemLayout<'_, '_> {
         }
     }
 
-    fn layout_text_run(&mut self, text_item: TextRunLineItem, is_last_text_run: bool) {
+    fn layout_text_run(
+        &mut self,
+        text_item: TextRunLineItem,
+        is_last_text_run: bool,
+        number_of_lines: i32,
+    ) {
         if text_item.text.is_empty() || self.overflow_indicator_added {
             return;
         }
@@ -590,13 +605,33 @@ impl LineItemLayout<'_, '_> {
         }
         .filter(|_| {
             (parent_style.get_inherited_box().writing_mode == WritingMode::HorizontalTb) &&
-                (parent_style.get_box().overflow_x != Overflow_X::Visible)
+                (parent_style.get_box().overflow_x != Overflow_X::Visible) &&
+                (parent_style.get_box().display.inside() == DisplayInside::Flow)
         });
 
         let mut can_be_elided: bool;
         match overflow_indicator {
             Some(ref _s) => can_be_elided = true,
             None => can_be_elided = false,
+        }
+
+        // 2. check based on -webkit-line-clamp property
+        let webkit_line_clamp = self
+            .layout
+            .ifc
+            .shared_inline_styles
+            .style
+            .borrow()
+            .get_box()
+            ._webkit_line_clamp;
+        let webkit_box_orient = parent_style.get_box()._webkit_box_orient;
+        let display_type = parent_style.get_box().display;
+
+        if (webkit_line_clamp.0 != 0) &&
+            (webkit_box_orient == BoxOrient::Vertical) &&
+            (display_type.inside() == DisplayInside::WebkitBox)
+        {
+            can_be_elided = true;
         }
 
         let mut number_of_justification_opportunities = 0;
@@ -706,7 +741,9 @@ impl LineItemLayout<'_, '_> {
                     original_inline_advance < max_inline_advance) ||
                     (self.current_state.inline_advance >=
                         max_inline_advance - overflow_indicator_total_advance) &&
-                        !is_last_text_run)
+                        !is_last_text_run &&
+                        (webkit_line_clamp.0 == number_of_lines ||
+                            webkit_line_clamp.0 == 0))
             {
                 // With the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
                 let containing_block_bounds =

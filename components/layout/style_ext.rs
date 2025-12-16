@@ -1256,6 +1256,7 @@ impl From<stylo::Display> for Display {
             },
             stylo::DisplayInside::Flex => DisplayInside::Flex,
             stylo::DisplayInside::Grid => DisplayInside::Grid,
+            stylo::DisplayInside::WebkitBox => DisplayInside::Flex,
 
             // These should not be values of DisplayInside, but oh well
             stylo::DisplayInside::None => return Display::None,

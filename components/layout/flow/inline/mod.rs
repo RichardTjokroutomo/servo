@@ -93,6 +93,7 @@ use range::Range;
 use script::layout_dom::ServoThreadSafeLayoutNode;
 use servo_arc::Arc;
 use style::Zero;
+use style::computed_values::_webkit_box_orient::T as BoxOrient;
 use style::computed_values::text_wrap_mode::T as TextWrapMode;
 use style::computed_values::vertical_align::T as VerticalAlign;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
@@ -101,7 +102,7 @@ use style::properties::ComputedValues;
 use style::properties::style_structs::InheritedText;
 use style::values::generics::box_::VerticalAlignKeyword;
 use style::values::generics::font::LineHeight;
-use style::values::specified::box_::BaselineSource;
+use style::values::specified::box_::{BaselineSource, DisplayInside};
 use style::values::specified::text::TextAlignKeyword;
 use style::values::specified::{TextAlignLast, TextJustify};
 use text_run::{
@@ -740,6 +741,9 @@ pub(super) struct InlineFormattingContextLayout<'layout_data> {
     /// are laying out. This is used to propagate baselines to the ancestors of
     /// `display: inline-block` elements and table content.
     baselines: Baselines,
+
+    /// the number of lines (cumulative) the IFC has.
+    number_of_lines: i32,
 }
 
 impl InlineFormattingContextLayout<'_> {
@@ -971,6 +975,7 @@ impl InlineFormattingContextLayout<'_> {
             inline: inline_start_position,
         };
 
+        self.number_of_lines += 1;
         let baseline_offset = effective_block_advance.find_baseline_offset();
         let start_positioning_context_length = self.positioning_context.len();
         let fragments = LineItemLayout::layout_line_items(
@@ -980,6 +985,7 @@ impl InlineFormattingContextLayout<'_> {
             &effective_block_advance,
             justification_adjustment,
             is_phantom_line,
+            self.number_of_lines,
         );
 
         if !is_phantom_line {
@@ -1546,7 +1552,43 @@ impl InlineFormattingContextLayout<'_> {
         };
 
         if self.new_potential_line_size_causes_line_break(&potential_line_size) {
-            self.process_line_break(false /* forced_line_break */);
+            // relevant specs: https://www.w3.org/TR/css-overflow-4/#propdef--webkit-line-clamp
+            let line_clamp_number = self
+                .ifc
+                .shared_inline_styles
+                .style
+                .borrow()
+                .get_box()
+                ._webkit_line_clamp;
+            let webkit_box_orient = self
+                .ifc
+                .shared_inline_styles
+                .style
+                .borrow()
+                .get_box()
+                ._webkit_box_orient;
+            let display_type = self
+                .ifc
+                .shared_inline_styles
+                .style
+                .borrow()
+                .get_box()
+                .display;
+
+            if (webkit_box_orient == BoxOrient::Vertical) &&
+                (display_type.inside() == DisplayInside::WebkitBox)
+            {
+                if line_clamp_number.0 == 0 {
+                    self.process_line_break(false);
+                } else {
+                    if self.number_of_lines < line_clamp_number.0 - 1 {
+                        // minus one because we start from zero
+                        self.process_line_break(false /* forced_line_break */);
+                    }
+                }
+            } else {
+                self.process_line_break(false);
+            }
         }
         self.commit_current_segment_to_line();
     }
@@ -1791,6 +1833,7 @@ impl InlineFormattingContext {
             white_space_collapse: style_text.white_space_collapse,
             text_wrap_mode: style_text.text_wrap_mode,
             baselines: Baselines::default(),
+            number_of_lines: 0,
         };
 
         // FIXME(pcwalton): This assumes that margins never collapse through inline formatting
