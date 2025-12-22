@@ -268,14 +268,14 @@ codegen-units = 1
 # Or for Stylo:
 #
 [patch."https://github.com/servo/stylo"]
-selectors = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-servo_arc = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo_atoms = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo_config = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo_dom = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo_malloc_size_of = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
-stylo_traits = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "txt-overflow" }
+selectors = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+servo_arc = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo_atoms = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo_config = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo_dom = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo_malloc_size_of = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
+stylo_traits = { git = "https://github.com/RichardTjokroutomo/stylo", branch = "webkit-line-clamp-2" }
 #
 # Or for WebRender:
 #
