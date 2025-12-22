@@ -93,7 +93,6 @@ use range::Range;
 use script::layout_dom::ServoThreadSafeLayoutNode;
 use servo_arc::Arc;
 use style::Zero;
-use style::computed_values::_webkit_box_orient::T as BoxOrient;
 use style::computed_values::text_wrap_mode::T as TextWrapMode;
 use style::computed_values::vertical_align::T as VerticalAlign;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
@@ -102,7 +101,7 @@ use style::properties::ComputedValues;
 use style::properties::style_structs::InheritedText;
 use style::values::generics::box_::VerticalAlignKeyword;
 use style::values::generics::font::LineHeight;
-use style::values::specified::box_::{BaselineSource, DisplayInside};
+use style::values::specified::box_::BaselineSource;
 use style::values::specified::text::TextAlignKeyword;
 use style::values::specified::{TextAlignLast, TextJustify};
 use text_run::{
@@ -904,13 +903,17 @@ impl InlineFormattingContextLayout<'_> {
 
         // Finally we finish the line itself and convert all of the LineItems into
         // fragments.
-        self.finish_current_line_and_reset(true /* last_line_or_forced_line_break */);
+        self.finish_current_line_and_reset(true /* last_line_or_forced_line_break */, true);
     }
 
     /// Finish layout of all inline boxes for the current line. This will gather all
     /// [`LineItem`]s and turn them into [`Fragment`]s, then reset the
     /// [`InlineFormattingContextLayout`] preparing it for laying out a new line.
-    fn finish_current_line_and_reset(&mut self, last_line_or_forced_line_break: bool) {
+    fn finish_current_line_and_reset(
+        &mut self,
+        last_line_or_forced_line_break: bool,
+        processing_last_line: bool,
+    ) {
         let whitespace_trimmed = self.current_line.trim_trailing_whitespace();
         let (inline_start_position, justification_adjustment) = self
             .calculate_current_line_inline_start_and_justification_adjustment(
@@ -985,6 +988,7 @@ impl InlineFormattingContextLayout<'_> {
             &effective_block_advance,
             justification_adjustment,
             is_phantom_line,
+            processing_last_line,
             self.number_of_lines,
         );
 
@@ -1515,7 +1519,7 @@ impl InlineFormattingContextLayout<'_> {
 
     fn process_line_break(&mut self, forced_line_break: bool) {
         self.current_line_segment.trim_leading_whitespace();
-        self.finish_current_line_and_reset(forced_line_break);
+        self.finish_current_line_and_reset(forced_line_break, false);
     }
 
     pub(super) fn unbreakable_segment_fits_on_line(&mut self) -> bool {
@@ -1552,43 +1556,7 @@ impl InlineFormattingContextLayout<'_> {
         };
 
         if self.new_potential_line_size_causes_line_break(&potential_line_size) {
-            // relevant specs: https://www.w3.org/TR/css-overflow-4/#propdef--webkit-line-clamp
-            let line_clamp_number = self
-                .ifc
-                .shared_inline_styles
-                .style
-                .borrow()
-                .get_box()
-                ._webkit_line_clamp;
-            let webkit_box_orient = self
-                .ifc
-                .shared_inline_styles
-                .style
-                .borrow()
-                .get_box()
-                ._webkit_box_orient;
-            let display_type = self
-                .ifc
-                .shared_inline_styles
-                .style
-                .borrow()
-                .get_box()
-                .display;
-
-            if (webkit_box_orient == BoxOrient::Vertical) &&
-                (display_type.inside() == DisplayInside::WebkitBox)
-            {
-                if line_clamp_number.0 == 0 {
-                    self.process_line_break(false);
-                } else {
-                    if self.number_of_lines < line_clamp_number.0 - 1 {
-                        // minus one because we start from zero
-                        self.process_line_break(false /* forced_line_break */);
-                    }
-                }
-            } else {
-                self.process_line_break(false);
-            }
+            self.process_line_break(false /* forced_line_break */);
         }
         self.commit_current_segment_to_line();
     }

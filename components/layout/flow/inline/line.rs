@@ -17,6 +17,7 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::computed_values::writing_mode::T as WritingMode;
 use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
 use style::values::generics::length::GenericMargin;
+use style::values::generics::text;
 use style::values::specified::align::AlignFlags;
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::values::specified::text::TextOverflowSide;
@@ -177,6 +178,7 @@ impl LineItemLayout<'_, '_> {
         effective_block_advance: &LineBlockSizes,
         justification_adjustment: Au,
         is_phantom_line: bool,
+        processing_last_line: bool,
         number_of_lines: i32,
     ) -> Vec<Fragment> {
         let baseline_offset = effective_block_advance.find_baseline_offset();
@@ -196,7 +198,7 @@ impl LineItemLayout<'_, '_> {
             is_phantom_line,
             overflow_indicator_added: false,
         }
-        .layout(line_items, number_of_lines)
+        .layout(line_items, processing_last_line, number_of_lines)
     }
 
     /// Start and end inline boxes in tree order, so that it reflects the given inline box.
@@ -227,6 +229,7 @@ impl LineItemLayout<'_, '_> {
     pub(super) fn layout(
         &mut self,
         mut line_items: Vec<LineItem>,
+        processing_last_line: bool,
         number_of_lines: i32,
     ) -> Vec<Fragment> {
         let mut last_level = Level::ltr();
@@ -306,6 +309,7 @@ impl LineItemLayout<'_, '_> {
                     self.layout_text_run(
                         text_run,
                         current_text_run == total_text_run,
+                        processing_last_line,
                         number_of_lines,
                     )
                 },
@@ -585,6 +589,7 @@ impl LineItemLayout<'_, '_> {
         &mut self,
         text_item: TextRunLineItem,
         is_last_text_run: bool,
+        processing_last_line: bool,
         number_of_lines: i32,
     ) {
         if text_item.text.is_empty() || self.overflow_indicator_added {
@@ -598,7 +603,7 @@ impl LineItemLayout<'_, '_> {
         // Check if we can elide the current `TextRunLineItem`
         // 1. Check the parent style's text-overflow property.
         let parent_style = self.layout.ifc.shared_inline_styles.style.borrow();
-        let overflow_indicator = match &parent_style.get_text().text_overflow.second {
+        let mut overflow_indicator = match &parent_style.get_text().text_overflow.second {
             TextOverflowSide::Clip => None,
             TextOverflowSide::Ellipsis => Some("\u{2026}".to_string()),
             TextOverflowSide::String(s) => Some(s.to_string()),
@@ -626,12 +631,18 @@ impl LineItemLayout<'_, '_> {
             ._webkit_line_clamp;
         let webkit_box_orient = parent_style.get_box()._webkit_box_orient;
         let display_type = parent_style.get_box().display;
+        let mut must_be_elided = false;
 
         if (webkit_line_clamp.0 != 0) &&
             (webkit_box_orient == BoxOrient::Vertical) &&
-            (display_type.inside() == DisplayInside::WebkitBox)
+            (display_type.inside() == DisplayInside::WebkitBox) &&
+            (number_of_lines == webkit_line_clamp.0)
         {
             can_be_elided = true;
+            overflow_indicator = Some("\u{2026}".to_string());
+            if !processing_last_line {
+                must_be_elided = true;
+            }
         }
 
         let mut number_of_justification_opportunities = 0;
@@ -726,6 +737,7 @@ impl LineItemLayout<'_, '_> {
                         .expect("It is impossible for overflow_indicator_font to be none."),
                     overflow_indicator_total_advance,
                     max_inline_advance - overflow_indicator_total_advance,
+                    must_be_elided,
                 );
 
             // According to https://drafts.csswg.org/css-overflow-4/,
@@ -739,11 +751,9 @@ impl LineItemLayout<'_, '_> {
             if can_be_elided &&
                 ((self.current_state.inline_advance > max_inline_advance &&
                     original_inline_advance < max_inline_advance) ||
-                    (self.current_state.inline_advance >=
+                    (self.current_state.inline_advance >
                         max_inline_advance - overflow_indicator_total_advance) &&
-                        !is_last_text_run &&
-                        (webkit_line_clamp.0 == number_of_lines ||
-                            webkit_line_clamp.0 == 0))
+                        !is_last_text_run)
             {
                 // With the current implementation, `ellipsis_textrun_segment.runs` is never empty since it is the glyph store of the ellipsis glyph.
                 let containing_block_bounds =
@@ -814,11 +824,15 @@ impl LineItemLayout<'_, '_> {
                 self.overflow_indicator_added = true;
             } else {
                 // Insert text fragment
+                let mut right_bound_offset = Au(0);
+                if must_be_elided {
+                    right_bound_offset += overflow_indicator_total_advance;
+                }
                 let text_metadata = OverflowIndicatorData::new(
-                    (Au(0), self.layout.containing_block.size.inline),
+                    (Au(0), max_inline_advance - right_bound_offset),
                     first_text_item_of_the_line,
                     original_inline_advance,
-                    false,
+                    false || must_be_elided,
                 );
 
                 self.current_state.fragments.push((
@@ -835,6 +849,31 @@ impl LineItemLayout<'_, '_> {
                     })),
                     content_rect,
                 ));
+
+                if must_be_elided && is_last_text_run {
+                    let ellipsis_metadata = OverflowIndicatorData::new(
+                        (Au(0), max_inline_advance),
+                        first_text_item_of_the_line,
+                        original_inline_advance,
+                        true,
+                    );
+                    self.current_state.fragments.push((
+                        Fragment::Text(ArcRefCell::new(TextFragment {
+                            base: text_item.base_fragment_info,
+                            inline_styles: self.layout.ifc.shared_inline_styles.clone(),
+                            rect: PhysicalRect::zero(),
+                            font_metrics: overflow_indicator_font.unwrap().metrics.clone(),
+                            font_key: overflow_font_instance_key.expect(
+                                "It is impossible for overflow_indicator_font_instance_key to be none.",
+                            ),
+                            glyphs: overflow_indicator_glyphs,
+                            justification_adjustment: self.justification_adjustment,
+                            selection_range: text_item.selection_range,
+                            overflow_metadata: ellipsis_metadata,
+                        })),
+                        overflow_indicator_content_rect,
+                    ));
+                }
             }
         } else {
             // Insert text fragment
@@ -869,6 +908,7 @@ impl LineItemLayout<'_, '_> {
         overflow_indicator_font: FontRef,
         overflow_indicator_total_advance: Au,
         inline_target: Au,
+        must_be_elided: bool,
     ) -> (LogicalRect<Au>, TextRunLineItem) {
         // 1. Find the inline start corner (if horizontal, then starting x pos), denoted as `inline_start`.
         // `inline_target` is the minimum value for `inline_start`.
@@ -914,9 +954,30 @@ impl LineItemLayout<'_, '_> {
                 inline: overflow_indicator_total_advance,
             },
         };
+        if !must_be_elided {
+            // return
+            (content_rect, text_item)
+        } else {
+            let appending_start_corner = LogicalVec2 {
+                inline: self.current_state.inline_advance,
+                block: self.current_state.baseline_offset -
+                    overflow_indicator_font.metrics.ascent -
+                    self.current_state.parent_offset.block,
+            };
+            let appending_content_rect = LogicalRect {
+                start_corner,
+                size: LogicalVec2 {
+                    block: overflow_indicator_font.metrics.line_gap,
+                    inline: overflow_indicator_total_advance,
+                },
+            };
 
-        // return
-        (content_rect, text_item)
+            if appending_start_corner.inline < start_corner.inline {
+                (appending_content_rect, text_item)
+            } else {
+                (content_rect, text_item)
+            }
+        }
     }
 
     fn form_overflow_indicator(
