@@ -10,29 +10,29 @@
 
 <style>
 p {
-  width: 140px; 
+  width: 140px;
   border: 1px solid #000000;
 }
 
-.a {
+.normal {
   word-break: normal;
 }
 
-.b {
+.keep-all {
   word-break: keep-all;
 }
 
 </style>
 <div>
 <h2>word-break: normal:</h2>
-<p class="a">中文english中文english中文english中文english中文english</p>
+<p class="normal">中文english中文english中文english中文english中文english</p>
 
 <h2>word-break: keep-all:</h2>
-<p class="b">中文english中文english中文english中文english中文english</p>
+<p class="keep-all">中文english中文english中文english中文english中文english</p>
 
-<h2>word-break: keep-all w/ whitespace:</h2>
-<p class="b">中文english中文english 中文english中文english中文english</p>
+<h2>word-break: keep-all (w/ whitespace):</h2>
+<p class="keep-all">中文english中文english 中文english中文english中文english</p>
 
-<h2>word-break: keep-all w/ whitespace & Chinese comma:</h2>
-<p class="b">中文english中文english 中文english中文，english中文english</p>
+<h2>word-break: keep-all (w/ whitespace & Chinese comma):</h2>
+<p class="keep-all">中文english中文english 中文english中文，english中文english</p>
 </div>

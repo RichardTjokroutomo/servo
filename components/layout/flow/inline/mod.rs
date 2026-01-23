@@ -1815,23 +1815,20 @@ impl InlineFormattingContext {
 
         let bidi_info = BidiInfo::new(&text_content, Some(starting_bidi_level));
         let has_right_to_left_content = bidi_info.has_rtl();
+        let shared_inline_styles = builder
+            .shared_inline_styles_stack
+            .last()
+            .expect("Should have at least one SharedInlineStyle for the root of an IFC")
+            .clone();
 
         let mut new_linebreaker = LineBreaker::new(
             text_content.as_str(),
-            builder
-                .shared_inline_styles_stack
-                .last()
-                .expect("Should have at least one SharedInlineStyle for the root of an IFC")
-                .clone()
+            shared_inline_styles
                 .style
                 .borrow()
                 .get_inherited_text()
                 .word_break,
-            builder
-                .shared_inline_styles_stack
-                .last()
-                .expect("Should have at least one SharedInlineStyle for the root of an IFC")
-                .clone()
+            shared_inline_styles
                 .style
                 .borrow()
                 .get_inherited_text()
@@ -1870,11 +1867,7 @@ impl InlineFormattingContext {
             text_content,
             inline_items: builder.inline_items,
             inline_boxes: builder.inline_boxes,
-            shared_inline_styles: builder
-                .shared_inline_styles_stack
-                .last()
-                .expect("Should have at least one SharedInlineStyle for the root of an IFC")
-                .clone(),
+            shared_inline_styles,
             has_first_formatted_line,
             contains_floats: builder.contains_floats,
             is_single_line_text_input,
