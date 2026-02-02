@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::File;
 use std::sync::LazyLock;
 
 use base::text::{UnicodeBlock, UnicodeBlockMethod, is_cjk};
@@ -56,8 +56,7 @@ impl FontList {
 
         for system_font_path in system_font_iterator {
             // Obtain the font file
-            let font_bytes =
-                fs::read(system_font_path.path()).expect("Android returns an invalid path!");
+            let font_bytes = File::open(system_font_path.path()).and_then(|file| unsafe {memmap2::Mmap::map(&file)}).unwrap();
 
             // Read the font file
             let font = FontRef::new(&font_bytes);
