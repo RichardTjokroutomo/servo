@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cmp;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -539,57 +540,183 @@ impl LineItemLayout<'_, '_> {
             return;
         }
 
+        let mut incoming_tab_index = 0;
+        let mut tab_index_needs_updating = true;
+        let mut text_fragment_glyphs: Vec<std::sync::Arc<GlyphStore>> = Vec::new();
+        let mut inline_advance = Au(0);
         let mut number_of_justification_opportunities = 0;
-        let mut inline_advance = text_item
-            .text
-            .iter()
-            .map(|glyph_store| {
-                number_of_justification_opportunities += glyph_store.total_word_separators();
-                glyph_store.total_advance()
-            })
-            .sum();
+        let glyph_ascent = text_item.font_metrics.ascent;
+        let glyph_line_gap = text_item.font_metrics.line_gap;
+        let glyph_space_advance = text_item.font_metrics.space_advance;
+        let glyph_offsets = match text_item.offsets {
+            Some(val) => Some(val.clone()),
+            _ => None,
+        };
+        let mut incoming_tab_stop = text_item.text.len();
+        println!("tab stob len: {:?}", text_item.tab_stop_indices.len());
+        println!("val: {:?}", text_item.tab_stop_indices[0]);
 
-        if !self.justification_adjustment.is_zero() {
-            inline_advance += self
-                .justification_adjustment
-                .scale_by(number_of_justification_opportunities as f32);
+        // create text fragment
+        for (glyph_index, glyph_store) in text_item.text.iter().enumerate(){
+            inline_advance += glyph_store.total_advance();
+            number_of_justification_opportunities += glyph_store.total_word_separators();
+            text_fragment_glyphs.push(glyph_store.clone());
+            if !self.justification_adjustment.is_zero() {
+                inline_advance += self
+                    .justification_adjustment
+                    .scale_by(number_of_justification_opportunities as f32);
+            }
+
+            if incoming_tab_index < text_item.tab_stop_indices.len() &&
+                tab_index_needs_updating
+            {   
+                // println!("val: {:?}", text_item.tab_stop_indices[incoming_tab_index]);
+                inline_advance += glyph_space_advance * 8; // TODO: POC. fix this later. 
+                incoming_tab_stop = text_item.tab_stop_indices[incoming_tab_index];
+                incoming_tab_index = cmp::min(incoming_tab_index + 1, text_item.text.len());
+                tab_index_needs_updating = false;
+            }
+
+            if glyph_index + 1 == incoming_tab_stop { // TODO: fix this error.
+                println!("creating text fragment inside loop");
+                let start_corner = LogicalVec2 {
+                    inline: self.current_state.inline_advance,
+                    block: self.current_state.baseline_offset -
+                        glyph_ascent -
+                        self.current_state.parent_offset.block,
+                };
+                let content_rect = LogicalRect {
+                    start_corner,
+                    size: LogicalVec2 {
+                        block: glyph_line_gap,
+                        inline: inline_advance,
+                    },
+                };
+
+                self.current_state.fragments.push((
+                    Fragment::Text(ArcRefCell::new(TextFragment {
+                        base: BaseFragment::new(
+                            text_item.base_fragment_info,
+                            text_item.inline_styles.style.clone().into(),
+                            PhysicalRect::zero(),
+                        ),
+                        selected_style: text_item.inline_styles.selected.clone(),
+                        font_metrics: Arc::clone(&text_item.font_metrics),
+                        font_key: text_item.font_key,
+                        glyphs: text_fragment_glyphs,
+                        justification_adjustment: self.justification_adjustment,
+                        offsets: glyph_offsets.clone(),
+                    })),
+                    content_rect,
+                ));
+
+                text_fragment_glyphs = Vec::new();
+                self.current_state.inline_advance += inline_advance;
+                inline_advance = Au(0);
+                tab_index_needs_updating = true;
+            }
         }
 
-        // The block start of the TextRun is often zero (meaning it has the same font metrics as the
-        // inline box's strut), but for children of the inline formatting context root or for
-        // fallback fonts that use baseline relative alignment, it might be different.
-        let start_corner = LogicalVec2 {
-            inline: self.current_state.inline_advance,
-            block: self.current_state.baseline_offset -
-                text_item.font_metrics.ascent -
-                self.current_state.parent_offset.block,
-        };
-        let content_rect = LogicalRect {
-            start_corner,
-            size: LogicalVec2 {
-                block: text_item.font_metrics.line_gap,
-                inline: inline_advance,
-            },
-        };
+        // push last text fragment, if needed.
+        if text_fragment_glyphs.len() > 0 {
+            if !self.justification_adjustment.is_zero() {
+                inline_advance += self
+                    .justification_adjustment
+                    .scale_by(number_of_justification_opportunities as f32);
+            }
+            
+            let start_corner = LogicalVec2 {
+                inline: self.current_state.inline_advance,
+                block: self.current_state.baseline_offset -
+                    glyph_ascent -
+                    self.current_state.parent_offset.block,
+            };
+            let content_rect = LogicalRect {
+                start_corner,
+                size: LogicalVec2 {
+                    block: glyph_line_gap,
+                    inline: inline_advance,
+                },
+            };
 
-        self.current_state.inline_advance += inline_advance;
-        self.current_state.fragments.push((
-            Fragment::Text(ArcRefCell::new(TextFragment {
-                base: BaseFragment::new(
-                    text_item.base_fragment_info,
-                    text_item.inline_styles.style.clone().into(),
-                    PhysicalRect::zero(),
-                ),
-                selected_style: text_item.inline_styles.selected.clone(),
-                font_metrics: text_item.font_metrics,
-                font_key: text_item.font_key,
-                glyphs: text_item.text,
-                justification_adjustment: self.justification_adjustment,
-                offsets: text_item.offsets,
-            })),
-            content_rect,
-        ));
+            
+            self.current_state.fragments.push((
+                Fragment::Text(ArcRefCell::new(TextFragment {
+                    base: BaseFragment::new(
+                        text_item.base_fragment_info,
+                        text_item.inline_styles.style.clone().into(),
+                        PhysicalRect::zero(),
+                    ),
+                    selected_style: text_item.inline_styles.selected.clone(),
+                    font_metrics: Arc::clone(&text_item.font_metrics),
+                    font_key: text_item.font_key,
+                    glyphs: text_fragment_glyphs,
+                    justification_adjustment: self.justification_adjustment,
+                    offsets: glyph_offsets.clone(),
+                })),
+                content_rect,
+            ));
+
+            self.current_state.inline_advance += inline_advance;
+        }
     }
+
+    // fn layout_text_run(&mut self, text_item: TextRunLineItem) {
+    //     if text_item.text.is_empty() {
+    //         return;
+    //     }
+
+    //     let mut number_of_justification_opportunities = 0;
+    //     let mut inline_advance = text_item
+    //         .text
+    //         .iter()
+    //         .map(|glyph_store| {
+    //             number_of_justification_opportunities += glyph_store.total_word_separators();
+    //             glyph_store.total_advance()
+    //         })
+    //         .sum();
+
+    //     if !self.justification_adjustment.is_zero() {
+    //         inline_advance += self
+    //             .justification_adjustment
+    //             .scale_by(number_of_justification_opportunities as f32);
+    //     }
+
+    //     // The block start of the TextRun is often zero (meaning it has the same font metrics as the
+    //     // inline box's strut), but for children of the inline formatting context root or for
+    //     // fallback fonts that use baseline relative alignment, it might be different.
+    //     let start_corner = LogicalVec2 {
+    //         inline: self.current_state.inline_advance,
+    //         block: self.current_state.baseline_offset -
+    //             text_item.font_metrics.ascent -
+    //             self.current_state.parent_offset.block,
+    //     };
+    //     let content_rect = LogicalRect {
+    //         start_corner,
+    //         size: LogicalVec2 {
+    //             block: text_item.font_metrics.line_gap,
+    //             inline: inline_advance,
+    //         },
+    //     };
+
+    //     self.current_state.inline_advance += inline_advance;
+    //     self.current_state.fragments.push((
+    //         Fragment::Text(ArcRefCell::new(TextFragment {
+    //             base: BaseFragment::new(
+    //                 text_item.base_fragment_info,
+    //                 text_item.inline_styles.style.clone().into(),
+    //                 PhysicalRect::zero(),
+    //             ),
+    //             selected_style: text_item.inline_styles.selected.clone(),
+    //             font_metrics: text_item.font_metrics,
+    //             font_key: text_item.font_key,
+    //             glyphs: text_item.text,
+    //             justification_adjustment: self.justification_adjustment,
+    //             offsets: text_item.offsets,
+    //         })),
+    //         content_rect,
+    //     ));
+    // }
 
     fn layout_atomic(&mut self, atomic: AtomicLineItem) {
         // The initial `start_corner` of the Fragment is only the PaddingBorderMargin sum start
@@ -798,7 +925,7 @@ impl LineItem {
     }
 }
 
-#[derive(MallocSizeOf)]
+#[derive(MallocSizeOf, Clone)]
 pub(crate) struct TextRunOffsets {
     /// The selection range of the containing inline formatting context.
     #[ignore_malloc_size_of = "This is stored primarily in the DOM"]
@@ -819,6 +946,7 @@ pub(super) struct TextRunLineItem {
     /// When necessary, this field store the [`TextRunOffsets`] for a particular
     /// [`TextRunLineItem`]. This is currently only used inside of text inputs.
     pub offsets: Option<Box<TextRunOffsets>>,
+    pub tab_stop_indices: Vec<usize>,
 }
 
 impl TextRunLineItem {
@@ -886,11 +1014,16 @@ impl TextRunLineItem {
         new_bidi_level: Level,
         new_glyph_store: &Arc<GlyphStore>,
         new_offsets: &Option<TextRunOffsets>,
+        incoming_tab_stop_index: Option<usize>,
     ) -> bool {
         if self.font_key != new_font_key || self.bidi_level != new_bidi_level {
             return false;
         }
         self.text.push(new_glyph_store.clone());
+        match incoming_tab_stop_index {
+            Some(tab_index) => self.tab_stop_indices.push(tab_index),
+            _ => {},
+        }
 
         assert_eq!(self.offsets.is_some(), new_offsets.is_some());
         if let (Some(new_offsets), Some(existing_offsets)) = (new_offsets, self.offsets.as_mut()) {
