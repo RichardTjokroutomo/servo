@@ -155,17 +155,7 @@ addEventListener("getPossibleBreakpoints", event => {
     getPossibleBreakpointsResult(event, result);
 });
 
-function handlePauseAndRespond(frame, pauseReason) {
-    dbg.onEnterFrame = undefined;
-    clearSteppingHooks();
-
-    // Get the pipeline ID for this debuggee
-    const pipelineId = debuggeesToPipelineIds.get(frame.script.global);
-    if (!pipelineId) {
-        console.error("[debugger] No pipeline ID for frame's global");
-        return undefined;
-    }
-
+function createFrameActor(frame, pipelineId) {
     let frameActorId = findKeyByValue(frameActorsToFrames, frame);
     if (!frameActorId) {
         // TODO: Check if we already have an actor for this frame
@@ -187,6 +177,22 @@ function handlePauseAndRespond(frame, pauseReason) {
         frameActorsToFrames.set(frameActorId, frame);
     }
 
+    return frameActorId;
+}
+
+function handlePauseAndRespond(frame, pauseReason) {
+    dbg.onEnterFrame = undefined;
+    clearSteppingHooks(frame);
+
+    // Get the pipeline ID for this debuggee
+    const pipelineId = debuggeesToPipelineIds.get(frame.script.global);
+    if (!pipelineId) {
+        console.error("[debugger] No pipeline ID for frame's global");
+        return undefined;
+    }
+
+    let frameActorId = createFrameActor(frame, pipelineId);
+
     // <https://firefox-source-docs.mozilla.org/js/Debugger/Debugger.Script.html#getoffsetmetadata-offset>
     const offset = frame.offset;
     const offsetMetadata = frame.script.getOffsetMetadata(offset);
@@ -206,6 +212,46 @@ function handlePauseAndRespond(frame, pauseReason) {
     // <https://firefox-source-docs.mozilla.org/js/Debugger/Conventions.html#resumption-values>
     // Return undefined to continue execution normally after resume.
     return undefined;
+}
+
+addEventListener("frames", event => {
+    const {pipelineId, start, count} = event;
+    let frameList = handleListFrames(pipelineId, start, count);
+
+    listFramesResult(frameList);
+})
+
+// <https://searchfox.org/firefox-main/source/devtools/server/actors/thread.js#1425>
+function handleListFrames(pipelineId, start, count) {
+    let frame = dbg.getNewestFrame()
+
+    const walkToParentFrame = () => {
+        if (!frame) {
+            return;
+        }
+
+        const currentFrame = frame;
+        frame = null;
+
+        if (currentFrame.older) {
+            frame = currentFrame.older;
+        }
+    }
+
+    let i = 0;
+    while (frame && i < start) {
+      walkToParentFrame();
+      i++;
+    }
+
+    // Return count frames, or all remaining frames if count is not defined.
+    const frames = [];
+    for (; frame && (!count || i < start + count); i++, walkToParentFrame()) {
+      const frameActorId = createFrameActor(frame, pipelineId);
+      frames.push(frameActorId);
+    }
+
+    return frames;
 }
 
 addEventListener("setBreakpoint", event => {
@@ -242,7 +288,14 @@ function makeSteppingHooks(steppingType, startFrame) {
                 return handlePauseAndRespond(startFrame, { type_: PAUSE_REASONS.RESUME_LIMIT });
             }
         },
-        onPop: () => {},
+        onPop: (completion) => {
+            this.reportedPop = true;
+            suspendedFrame = startFrame;
+            if (steppingType !== "finish") {
+                return handlePauseAndRespond(startFrame, completion);
+            }
+            attachSteppingHooks("next", startFrame);
+        },
     }
 }
 
@@ -258,7 +311,7 @@ function getNextStepFrame(frame) {
 // <https://searchfox.org/firefox-main/source/devtools/server/actors/thread.js#1235>
 function attachSteppingHooks(steppingType, frame) {
     if (steppingType === "finish" && frame.reportedPop) {
-      steppingType = "next";
+        steppingType = "next";
     }
 
     const stepFrame = getNextStepFrame(frame);
@@ -266,7 +319,7 @@ function attachSteppingHooks(steppingType, frame) {
         steppingType = "step";
     }
 
-    const { onEnterFrame, onPop, onStep } = makeSteppingHooks(
+    const { onEnterFrame, onStep, onPop } = makeSteppingHooks(
         steppingType,
         frame,
     );
@@ -282,11 +335,18 @@ function attachSteppingHooks(steppingType, frame) {
                 if (stepFrame.script) {
                     stepFrame.onStep = onStep;
                 }
+            case "finish":
+                stepFrame.onPop = onPop;
+                break;
         }
     }
 }
 
-function clearSteppingHooks() {
+function clearSteppingHooks(suspendedFrame) {
+    if (suspendedFrame) {
+        suspendedFrame.onStep = undefined;
+        suspendedFrame.onPop = undefined;
+    }
     let frame = this.youngestFrame;
     if (frame?.onStack) {
         while (frame) {
@@ -300,12 +360,17 @@ function clearSteppingHooks() {
 // <https://firefox-source-docs.mozilla.org/devtools/backend/protocol.html#resuming-a-thread>
 addEventListener("resume", event => {
     const {resumeLimitType: steppingType, frameActorID} = event;
-    console.log("\n\n\n---------", steppingType);
+    let frame = dbg.getNewestFrame();
+    if (frameActorID) {
+        frame = frameActorsToFrames.get(frameActorID);
+        if (!frame) {
+            console.error("[debugger] Couldn't find frame");
+        }
+    }
     if (steppingType) {
-        const frame = frameActorsToFrames.get(frameActorID);
         attachSteppingHooks(steppingType, frame);
     } else {
-        clearSteppingHooks();
+        clearSteppingHooks(frame);
     }
 });
 

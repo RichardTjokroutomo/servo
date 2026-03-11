@@ -48,6 +48,7 @@ pub(crate) enum Fragment {
     Text(ArcRefCell<TextFragment>),
     Image(ArcRefCell<ImageFragment>),
     IFrame(ArcRefCell<IFrameFragment>),
+    ElidedText(ArcRefCell<ElidedTextFragment>),
 }
 
 #[derive(Clone, MallocSizeOf)]
@@ -63,7 +64,7 @@ pub(crate) struct CollapsedMargin {
     min_negative: Au,
 }
 
-#[derive(MallocSizeOf)]
+#[derive(MallocSizeOf, Clone)]
 pub(crate) struct TextFragment {
     pub base: BaseFragment,
     pub selected_style: SharedStyle,
@@ -77,6 +78,21 @@ pub(crate) struct TextFragment {
     /// When necessary, this field store the [`TextRunOffsets`] for a particular
     /// [`TextRunLineItem`]. This is currently only used inside of text inputs.
     pub offsets: Option<Box<TextRunOffsets>>,
+    /// Whether or not this [`TextFragment`] is an empty fragment added for the
+    /// benefit of placing a text cursor on an otherwise empty editable line.
+    pub is_empty_for_text_cursor: bool,
+}
+
+/// [`ElidedTextFragment`] is a superset of [`TextFragment`].
+/// An [`ElidedTextFragment`] can be one of the following two:
+/// 1. It is a fragment for an elided text item.
+/// 2. It is a fragment for the overflow indicator.
+#[derive(MallocSizeOf, Clone)]
+pub(crate) struct ElidedTextFragment {
+    pub text_fragment: TextFragment,
+    pub fully_elided: bool,
+    pub original_advance: Au,
+    pub boundary: Au, // TODO: In the future, make the signature (Au, Au) once two sided `text-overflow: ellipsis` has been supported
 }
 
 #[derive(MallocSizeOf)]
@@ -114,6 +130,9 @@ impl Fragment {
             Fragment::Float(fragment) => {
                 AtomicRef::map(fragment.borrow(), |fragment| &fragment.base)
             },
+            Fragment::ElidedText(fragment) => {
+                AtomicRef::map(fragment.borrow(), |fragment| &fragment.text_fragment.base)
+            },
         })
     }
 
@@ -138,6 +157,11 @@ impl Fragment {
             Fragment::Float(fragment) => {
                 AtomicRefMut::map(fragment.borrow_mut(), |fragment| &mut fragment.base)
             },
+            Fragment::ElidedText(fragment) => {
+                AtomicRefMut::map(fragment.borrow_mut(), |fragment| {
+                    &mut fragment.text_fragment.base
+                })
+            },
         })
     }
 
@@ -160,6 +184,7 @@ impl Fragment {
             Fragment::Text(_) => {},
             Fragment::Image(_) => {},
             Fragment::IFrame(_) => {},
+            Fragment::ElidedText(_) => {},
         }
     }
 
@@ -182,6 +207,7 @@ impl Fragment {
             Fragment::Text(fragment) => fragment.borrow().print(tree),
             Fragment::Image(fragment) => fragment.borrow().print(tree),
             Fragment::IFrame(fragment) => fragment.borrow().print(tree),
+            Fragment::ElidedText(fragment) => fragment.borrow().print(tree),
         }
     }
 
@@ -204,7 +230,8 @@ impl Fragment {
             Fragment::AbsoluteOrFixedPositioned(_) |
             Fragment::Text(..) |
             Fragment::Image(..) |
-            Fragment::IFrame(..) => self.base().map(|base| base.rect).unwrap_or_default(),
+            Fragment::IFrame(..) |
+            Fragment::ElidedText(..) => self.base().map(|base| base.rect).unwrap_or_default(),
         }
     }
 
@@ -239,7 +266,8 @@ impl Fragment {
             Fragment::Text(_) |
             Fragment::AbsoluteOrFixedPositioned(_) |
             Fragment::Image(_) |
-            Fragment::IFrame(_) => None,
+            Fragment::IFrame(_) |
+            Fragment::ElidedText(_) => None,
         }
     }
 
@@ -430,6 +458,12 @@ impl IFrameFragment {
                 \npipeline={:?} rect={:?}",
             self.pipeline_id, self.base.rect
         ));
+    }
+}
+
+impl ElidedTextFragment {
+    pub fn print(&self, tree: &mut PrintTree) {
+        tree.add_item("Elided Text".to_string());
     }
 }
 

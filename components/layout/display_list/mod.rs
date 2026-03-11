@@ -761,7 +761,33 @@ impl Fragment {
                         builder,
                         containing_block,
                         text_decorations,
+                        None,
                     ),
+                    Visibility::Hidden => (),
+                    Visibility::Collapse => (),
+                }
+            },
+            Fragment::ElidedText(elided_text) => {
+                let elided_text = &*elided_text.borrow();
+                if elided_text.fully_elided {
+                    return;
+                }
+                match elided_text
+                    .text_fragment
+                    .base
+                    .style()
+                    .get_inherited_box()
+                    .visibility
+                {
+                    Visibility::Visible => {
+                        self.build_display_list_for_text_fragment(
+                            &elided_text.text_fragment,
+                            builder,
+                            containing_block,
+                            text_decorations,
+                            Some((elided_text.original_advance, elided_text.boundary)),
+                        );
+                    },
                     Visibility::Hidden => (),
                     Visibility::Collapse => (),
                 }
@@ -775,6 +801,7 @@ impl Fragment {
         builder: &mut DisplayListBuilder,
         containing_block: &PhysicalRect<Au>,
         text_decorations: &Arc<Vec<FragmentTextDecoration>>,
+        overflow_indicator_data: Option<(Au, Au)>, // TODO: Make the signature Option<(Au, (Au, Au))> once two sided `text-overflow: ellipsis` has been supported
     ) {
         // NB: The order of painting text components (CSS Text Decoration Module Level 3) is:
         // shadows, underline, overline, text, text-emphasis, and then line-through.
@@ -792,9 +819,10 @@ impl Fragment {
             baseline_origin,
             fragment.justification_adjustment,
             include_whitespace,
+            overflow_indicator_data,
         );
 
-        if glyphs.is_empty() {
+        if glyphs.is_empty() && !fragment.is_empty_for_text_cursor {
             return;
         }
 
@@ -1008,6 +1036,18 @@ impl Fragment {
 
         if offsets.character_range.start > shared_selection.character_range.end ||
             offsets.character_range.end < shared_selection.character_range.start
+        {
+            return;
+        }
+
+        // When there is an active selection, the line is empty, and there is a forced linebreak,
+        // layout will push an empty fragment in order to trigger painting of the cursor on an empty line.
+        // This code ensure that it is only painted if the cursor is on the starting index of the empty
+        // fragment.
+        if fragment.is_empty_for_text_cursor &&
+            !offsets
+                .character_range
+                .contains(&shared_selection.character_range.start)
         {
             return;
         }
@@ -1621,11 +1661,24 @@ impl<'a> BuilderForBoxFragment<'a> {
         {
             Err(_) => return false,
             Ok(ResolvedImage::Image { image, size }) => {
-                let Some(image) = image.as_raster_image() else {
-                    return false;
+                let image_key = match image {
+                    CachedImage::Raster(raster_image) => raster_image.id,
+                    CachedImage::Vector(vector_image) => {
+                        let scale = builder.device_pixel_ratio.get();
+                        let size = Size2D::new(size.width * scale, size.height * scale).to_i32();
+                        node.and_then(|node| {
+                            builder.image_resolver.rasterize_vector_image(
+                                vector_image.id,
+                                size,
+                                node,
+                                vector_image.svg_id,
+                            )
+                        })
+                        .and_then(|rasterized_image| rasterized_image.id)
+                    },
                 };
 
-                let Some(key) = image.id else {
+                let Some(key) = image_key else {
                     return false;
                 };
 
@@ -1781,12 +1834,20 @@ fn glyphs(
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
     include_whitespace: bool,
+    // (original_advance, maximum advance before eliding)
+    additional_data: Option<(Au, Au)>, // TODO: Make the signature Option<(Au, (Au, Au))> once two sided `text-overflow: ellipsis` has been supported.
 ) -> (Vec<GlyphInstance>, Au) {
     let mut glyphs = vec![];
     let mut largest_advance = Au::zero();
+    let mut total_advance = Au::zero();
+
+    if let Some((original_inline_advance, _)) = additional_data {
+        total_advance += original_inline_advance
+    };
 
     for run in glyph_runs {
         for glyph in run.glyphs() {
+            total_advance += glyph.advance();
             if !run.is_whitespace() || include_whitespace {
                 let glyph_offset = glyph.offset().unwrap_or(Point2D::zero());
                 let point = LayoutPoint::new(
@@ -1797,7 +1858,14 @@ fn glyphs(
                     index: glyph.id(),
                     point,
                 };
-                glyphs.push(glyph_instance);
+                match additional_data {
+                    Some((_, boundaries)) => {
+                        if total_advance <= boundaries {
+                            glyphs.push(glyph_instance);
+                        }
+                    },
+                    None => glyphs.push(glyph_instance),
+                }
             }
 
             if glyph.char_is_word_separator() {

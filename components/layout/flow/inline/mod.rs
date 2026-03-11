@@ -96,6 +96,7 @@ use script::layout_dom::ServoThreadSafeLayoutNode;
 use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::computed_values::line_break::T as LineBreak;
+use style::computed_values::overflow_x::T as Overflow_X;
 use style::computed_values::text_wrap_mode::T as TextWrapMode;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::computed_values::word_break::T as WordBreak;
@@ -105,8 +106,8 @@ use style::properties::style_structs::InheritedText;
 use style::values::computed::BaselineShift;
 use style::values::generics::box_::BaselineShiftKeyword;
 use style::values::generics::font::LineHeight;
-use style::values::specified::box_::BaselineSource;
-use style::values::specified::text::TextAlignKeyword;
+use style::values::specified::box_::{BaselineSource, DisplayInside};
+use style::values::specified::text::{TextAlignKeyword, TextOverflowSide};
 use style::values::specified::{AlignmentBaseline, TextAlignLast, TextJustify};
 use text_run::{
     TextRun, XI_LINE_BREAKING_CLASS_GL, XI_LINE_BREAKING_CLASS_WJ, XI_LINE_BREAKING_CLASS_ZWJ,
@@ -1167,6 +1168,15 @@ impl InlineFormattingContextLayout<'_> {
 
         let baseline_offset = effective_block_advance.find_baseline_offset();
         let start_positioning_context_length = self.positioning_context.len();
+        let ifc_style = self.ifc.shared_inline_styles.style.borrow();
+
+        let can_be_elided = match &ifc_style.get_text().text_overflow.second {
+            TextOverflowSide::Clip => false,
+            TextOverflowSide::Ellipsis => true,
+            TextOverflowSide::String(_s) => false, // TODO(richardtjokroutomo): add support for text-overflow: string in future PR
+        } && (ifc_style.get_box().overflow_x != Overflow_X::Visible) && // TODO: Use logical coordinates (block, inline) instead of physical ones (x, y)
+            (ifc_style.get_box().display.inside() == DisplayInside::Flow);
+
         let fragments = LineItemLayout::layout_line_items(
             self,
             line_to_layout.line_items,
@@ -1174,6 +1184,7 @@ impl InlineFormattingContextLayout<'_> {
             &effective_block_advance,
             justification_adjustment,
             is_phantom_line,
+            can_be_elided,
         );
 
         if !is_phantom_line {
@@ -1642,8 +1653,45 @@ impl InlineFormattingContextLayout<'_> {
                 font_key,
                 bidi_level,
                 offsets: offsets.map(Box::new),
+                is_empty_for_text_cursor: false,
             },
         ));
+    }
+
+    /// If the current unbreakable line segment is empty and this [`InlineFormattingContext`] has a
+    /// selection, push [`LineItem::TextRun`]. This is used as a placeholder for rendering cursors
+    /// on empty lines.
+    fn possibly_push_empty_text_run_to_unbreakable_segment(
+        &mut self,
+        text_run: &TextRun,
+        font: &FontRef,
+        bidi_level: Level,
+        offsets: Option<TextRunOffsets>,
+    ) {
+        if offsets.is_none() || self.current_line_segment.has_content {
+            return;
+        }
+
+        let font_metrics = &font.metrics;
+        let font_key = font.key(
+            self.layout_context.painter_id,
+            &self.layout_context.font_context,
+        );
+
+        self.push_line_item_to_unbreakable_segment(LineItem::TextRun(
+            self.current_inline_box_identifier(),
+            TextRunLineItem {
+                text: Default::default(),
+                base_fragment_info: text_run.base_fragment_info,
+                inline_styles: text_run.inline_styles.clone(),
+                font_metrics: font_metrics.clone(),
+                font_key,
+                bidi_level,
+                offsets: offsets.map(Box::new),
+                is_empty_for_text_cursor: true,
+            },
+        ));
+        self.current_line_segment.has_content = true;
     }
 
     fn update_unbreakable_segment_for_new_content(
@@ -2316,6 +2364,13 @@ impl InlineContainerState {
                 AlignmentBaseline::TextBottom => {
                     self.font_metrics.descent -
                         child_block_size.size_for_baseline_positioning.descent
+                },
+                AlignmentBaseline::Alphabetic |
+                AlignmentBaseline::Ideographic |
+                AlignmentBaseline::Central |
+                AlignmentBaseline::Mathematical |
+                AlignmentBaseline::Hanging => {
+                    unreachable!("Got alignment-baseline value that should be disabled in Stylo")
                 },
             } +
             match child_baseline_shift {

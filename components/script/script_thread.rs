@@ -43,7 +43,7 @@ use chrono::{DateTime, Local};
 use constellation_traits::{
     JsEvalResult, LoadData, LoadOrigin, NavigationHistoryBehavior, ScreenshotReadinessResponse,
     ScriptToConstellationChan, ScriptToConstellationMessage, ScrollStateUpdate,
-    StructuredSerializedData, WindowSizeType,
+    StructuredSerializedData, TraversalDirection, WindowSizeType,
 };
 use crossbeam_channel::unbounded;
 use data_url::mime::Mime;
@@ -1246,8 +1246,11 @@ impl ScriptThread {
                 );
             }
 
-            // TODO(#31870): Implement step 17: if the focused area of doc is not a focusable area,
-            // then run the focusing steps for document's viewport.
+            // <https://html.spec.whatwg.org/multipage/#focus-fixup-rule>
+            // > For each doc of docs, if the focused area of doc is not a focusable area, then run the
+            // > focusing steps for doc's viewport, and set doc's relevant global object's navigation API's
+            // > focus changed during ongoing navigation to false.
+            document.perform_focus_fixup_rule(CanGc::from_cx(cx));
 
             // TODO: Perform pending transition operations from
             // https://drafts.csswg.org/css-view-transitions/#perform-pending-transition-operations.
@@ -2229,6 +2232,15 @@ impl ScriptThread {
             DevtoolScriptControlMsg::RequestAnimationFrame(id, name) => {
                 devtools::handle_request_animation_frame(&documents, id, name)
             },
+            DevtoolScriptControlMsg::NavigateTo(pipeline_id, url) => {
+                self.handle_navigate_to(pipeline_id, url)
+            },
+            DevtoolScriptControlMsg::GoBack(pipeline_id) => {
+                self.handle_traverse_history(pipeline_id, TraversalDirection::Back(1))
+            },
+            DevtoolScriptControlMsg::GoForward(pipeline_id) => {
+                self.handle_traverse_history(pipeline_id, TraversalDirection::Forward(1))
+            },
             DevtoolScriptControlMsg::Reload(id) => self.handle_reload(id, CanGc::from_cx(cx)),
             DevtoolScriptControlMsg::GetCssDatabase(reply) => {
                 devtools::handle_get_css_database(reply)
@@ -2284,6 +2296,15 @@ impl ScriptThread {
             },
             DevtoolScriptControlMsg::Interrupt => {
                 self.debugger_global.fire_interrupt(CanGc::from_cx(cx));
+            },
+            DevtoolScriptControlMsg::ListFrames(pipeline_id, start, count, result_sender) => {
+                self.debugger_global.fire_list_frames(
+                    pipeline_id,
+                    start,
+                    count,
+                    result_sender,
+                    CanGc::from_cx(cx),
+                );
             },
             DevtoolScriptControlMsg::Resume(resume_limit_type, frame_actor_id) => {
                 self.debugger_global.fire_resume(
@@ -3765,7 +3786,7 @@ impl ScriptThread {
             script_source,
             "",
             Some(IntroductionType::JAVASCRIPT_URL),
-            jsval.handle_mut(),
+            Some(jsval.handle_mut()),
         );
 
         load_data.js_eval_result = if jsval.get().is_string() {
@@ -4097,6 +4118,39 @@ impl ScriptThread {
         }
     }
 
+    fn handle_navigate_to(&self, pipeline_id: PipelineId, url: ServoUrl) {
+        // The constellation only needs to know the WebView ID for navigation,
+        // but actors don't keep track of it. Infer WebView ID from pipeline ID instead.
+        if let Some(document) = self.documents.borrow().find_document(pipeline_id) {
+            self.senders
+                .pipeline_to_constellation_sender
+                .send((
+                    document.webview_id(),
+                    pipeline_id,
+                    ScriptToConstellationMessage::LoadUrl(
+                        LoadData::new_for_new_unrelated_webview(url),
+                        NavigationHistoryBehavior::Push,
+                    ),
+                ))
+                .unwrap();
+        }
+    }
+
+    fn handle_traverse_history(&self, pipeline_id: PipelineId, direction: TraversalDirection) {
+        // The constellation only needs to know the WebView ID for navigation,
+        // but actors don't keep track of it. Infer WebView ID from pipeline ID instead.
+        if let Some(document) = self.documents.borrow().find_document(pipeline_id) {
+            self.senders
+                .pipeline_to_constellation_sender
+                .send((
+                    document.webview_id(),
+                    pipeline_id,
+                    ScriptToConstellationMessage::TraverseHistory(direction),
+                ))
+                .unwrap();
+        }
+    }
+
     fn handle_reload(&self, pipeline_id: PipelineId, can_gc: CanGc) {
         let window = self.documents.borrow().find_window(pipeline_id);
         if let Some(window) = window {
@@ -4192,7 +4246,7 @@ impl ScriptThread {
             script.into(),
             "",
             None, // No known `introductionType` for JS code from embedder
-            return_value.handle_mut(),
+            Some(return_value.handle_mut()),
         ) {
             _ = self.senders.pipeline_to_constellation_sender.send((
                 webview_id,

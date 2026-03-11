@@ -15,7 +15,6 @@ use dom_struct::dom_struct;
 use embedder_traits::ScriptToEmbedderChan;
 use embedder_traits::resources::{self, Resource};
 use js::context::JSContext;
-use js::jsval::UndefinedValue;
 use js::rust::wrappers2::JS_DefineDebuggerObject;
 use net_traits::ResourceThreads;
 use profile_traits::{mem, time};
@@ -37,6 +36,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
 use crate::dom::debuggerclearbreakpointevent::DebuggerClearBreakpointEvent;
+use crate::dom::debuggerframeevent::DebuggerFrameEvent;
 use crate::dom::debuggerinterruptevent::DebuggerInterruptEvent;
 use crate::dom::debuggerresumeevent::DebuggerResumeEvent;
 use crate::dom::debuggersetbreakpointevent::DebuggerSetBreakpointEvent;
@@ -63,6 +63,8 @@ pub(crate) struct DebuggerGlobalScope {
         RefCell<Option<GenericSender<Vec<devtools_traits::RecommendedBreakpointLocation>>>>,
     #[no_trace]
     eval_result_sender: RefCell<Option<GenericSender<EvaluateJSReply>>>,
+    #[no_trace]
+    get_list_frame_result_sender: RefCell<Option<GenericSender<Vec<String>>>>,
 }
 
 impl DebuggerGlobalScope {
@@ -109,6 +111,7 @@ impl DebuggerGlobalScope {
             ),
             devtools_to_script_sender,
             get_possible_breakpoints_result_sender: RefCell::new(None),
+            get_list_frame_result_sender: RefCell::new(None),
             eval_result_sender: RefCell::new(None),
         });
         let global = DebuggerGlobalScopeBinding::Wrap::<crate::DomTypeHolder>(cx, global);
@@ -132,13 +135,12 @@ impl DebuggerGlobalScope {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
 
-        rooted!(&in(cx) let mut rval = UndefinedValue());
         let _ = self.global_scope.evaluate_js_on_global(
             cx,
             resources::read_string(Resource::DebuggerJS).into(),
             "",
             None,
-            rval.handle_mut(),
+            None,
         );
     }
 
@@ -244,6 +246,35 @@ impl DebuggerGlobalScope {
         assert!(
             event.fire(self.upcast(), can_gc),
             "Guaranteed by DebuggerInterruptEvent::new"
+        );
+    }
+
+    pub(crate) fn fire_list_frames(
+        &self,
+        pipeline_id: PipelineId,
+        start: u32,
+        count: u32,
+        result_sender: GenericSender<Vec<String>>,
+        can_gc: CanGc,
+    ) {
+        assert!(
+            self.get_list_frame_result_sender
+                .replace(Some(result_sender))
+                .is_none()
+        );
+        let _realm = enter_realm(self);
+        let pipeline_id =
+            crate::dom::pipelineid::PipelineId::new(self.upcast(), pipeline_id, can_gc);
+        let event = DomRoot::upcast::<Event>(DebuggerFrameEvent::new(
+            self.upcast(),
+            &pipeline_id,
+            start,
+            count,
+            can_gc,
+        ));
+        assert!(
+            event.fire(self.upcast(), can_gc),
+            "Guaranteed by DebuggerFrameEvent::new"
         );
     }
 
@@ -523,5 +554,15 @@ impl DebuggerGlobalScopeMethods<crate::DomTypeHolder> for DebuggerGlobalScope {
         let _ = chan.send(msg);
 
         rx.recv().ok().map(DOMString::from)
+    }
+
+    fn ListFramesResult(&self, frame_actor_ids: Vec<DOMString>) {
+        info!("ListFramesResult: {frame_actor_ids:?}");
+        let sender = self
+            .get_list_frame_result_sender
+            .take()
+            .expect("Guaranteed by Self::fire_list_frames()");
+
+        let _ = sender.send(frame_actor_ids.into_iter().map(|i| i.into()).collect());
     }
 }

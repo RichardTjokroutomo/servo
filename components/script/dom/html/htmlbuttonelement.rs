@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::default::Default;
 
 use dom_struct::dom_struct;
-use html5ever::{LocalName, Prefix, local_name, ns};
+use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::codegen::GenericBindings::AttrBinding::AttrMethods;
@@ -290,7 +290,7 @@ impl HTMLButtonElement {
     fn command_for_element(&self) -> Option<DomRoot<Element>> {
         let command_for_value = self
             .upcast::<Element>()
-            .get_attribute(&ns!(), &local_name!("commandfor"))?
+            .get_attribute(&local_name!("commandfor"))?
             .Value();
 
         let root_node = self
@@ -355,7 +355,7 @@ impl HTMLButtonElement {
         // The element's optional value is the value of the element's value attribute,
         // if there is one; otherwise null.
         self.upcast::<Element>()
-            .get_attribute(&ns!(), &local_name!("value"))
+            .get_attribute(&local_name!("value"))
             .map(|attribute| attribute.Value())
     }
 }
@@ -384,7 +384,6 @@ impl VirtualMethods for HTMLButtonElement {
                         el.check_ancestors_disabled_state_for_form_control();
                     },
                 }
-                el.update_sequentially_focusable_status(can_gc);
                 self.validity_state(can_gc)
                     .perform_validation_and_update(ValidationFlags::all(), can_gc);
             },

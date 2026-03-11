@@ -28,7 +28,9 @@ use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
 use layout_api::{ScrollContainerQueryFlags, node_id_from_scroll_id};
 use rustc_hash::FxHashMap;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
+use script_bindings::codegen::GenericBindings::ElementBinding::ScrollLogicalPosition;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
+use script_bindings::codegen::GenericBindings::HTMLElementBinding::HTMLElementMethods;
 use script_bindings::codegen::GenericBindings::HTMLLabelElementBinding::HTMLLabelElementMethods;
 use script_bindings::codegen::GenericBindings::NavigatorBinding::NavigatorMethods;
 use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMethods;
@@ -43,6 +45,7 @@ use script_bindings::script_runtime::CanGc;
 use script_bindings::str::DOMString;
 use script_traits::ConstellationInputEvent;
 use servo_config::pref;
+use style::Atom;
 use style_traits::CSSPixel;
 use webrender_api::ExternalScrollId;
 
@@ -58,13 +61,14 @@ use crate::dom::gamepad::gamepad::{Gamepad, contains_user_gesture};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepadevent::GamepadEventType;
 use crate::dom::inputevent::HitTestResult;
+use crate::dom::interactive_element_command::InteractiveElementCommand;
 use crate::dom::node::{self, Node, NodeTraits, ShadowIncluding};
 use crate::dom::pointerevent::{PointerEvent, PointerId};
-use crate::dom::scrolling_box::ScrollingBoxAxis;
+use crate::dom::scrolling_box::{ScrollAxisState, ScrollRequirement, ScrollingBoxAxis};
 use crate::dom::types::{
     ClipboardEvent, CompositionEvent, DataTransfer, Element, Event, EventTarget, GlobalScope,
-    HTMLAnchorElement, HTMLLabelElement, KeyboardEvent, MouseEvent, Touch, TouchEvent, TouchList,
-    WheelEvent, Window,
+    HTMLAnchorElement, HTMLElement, HTMLLabelElement, KeyboardEvent, MouseEvent, Touch, TouchEvent,
+    TouchList, WheelEvent, Window,
 };
 use crate::drag_data_store::{DragDataStore, Kind, Mode};
 use crate::realms::enter_realm;
@@ -145,6 +149,8 @@ pub(crate) struct DocumentEventHandler {
     pending_input_events: DomRefCell<Vec<ConstellationInputEvent>>,
     /// The index of the last mouse move event in the pending input events queue.
     mouse_move_event_index: DomRefCell<Option<usize>>,
+    /// The index of the last wheel event in the pending input events queue.
+    wheel_event_index: DomRefCell<Option<usize>>,
     /// <https://w3c.github.io/uievents/#event-type-dblclick>
     click_counting_info: DomRefCell<ClickCountingInfo>,
     #[no_trace]
@@ -172,6 +178,8 @@ pub(crate) struct DocumentEventHandler {
     active_pointer_ids: DomRefCell<FxHashMap<i32, i32>>,
     /// Counter for generating unique pointer IDs for touch inputs
     next_touch_pointer_id: Cell<i32>,
+    /// A map holding information about currently registered access key handlers.
+    access_key_handlers: DomRefCell<FxHashMap<char, Dom<HTMLElement>>>,
 }
 
 impl DocumentEventHandler {
@@ -180,6 +188,7 @@ impl DocumentEventHandler {
             window: Dom::from_ref(window),
             pending_input_events: Default::default(),
             mouse_move_event_index: Default::default(),
+            wheel_event_index: Default::default(),
             click_counting_info: Default::default(),
             last_mouse_button_down_point: Default::default(),
             down_button_count: Cell::new(0),
@@ -191,6 +200,7 @@ impl DocumentEventHandler {
             active_keyboard_modifiers: Default::default(),
             active_pointer_ids: Default::default(),
             next_touch_pointer_id: Cell::new(1),
+            access_key_handlers: Default::default(),
         }
     }
 
@@ -209,6 +219,30 @@ impl DocumentEventHandler {
             }
 
             *self.mouse_move_event_index.borrow_mut() = Some(pending_input_events.len());
+        }
+
+        if let InputEvent::Wheel(ref new_wheel_event) = event.event.event {
+            // Coalesce with any existing pending wheel event by summing deltas.
+            if let Some(existing_constellation_wheel_event) = self
+                .wheel_event_index
+                .borrow()
+                .and_then(|index| pending_input_events.get_mut(index))
+            {
+                if let InputEvent::Wheel(ref mut existing_wheel_event) =
+                    existing_constellation_wheel_event.event.event
+                {
+                    if existing_wheel_event.delta.mode == new_wheel_event.delta.mode {
+                        existing_wheel_event.delta.x += new_wheel_event.delta.x;
+                        existing_wheel_event.delta.y += new_wheel_event.delta.y;
+                        existing_wheel_event.delta.z += new_wheel_event.delta.z;
+                        existing_wheel_event.point = new_wheel_event.point;
+                        existing_constellation_wheel_event.event.id = event.event.id;
+                        return;
+                    }
+                }
+            }
+
+            *self.wheel_event_index.borrow_mut() = Some(pending_input_events.len());
         }
 
         pending_input_events.push(event);
@@ -238,8 +272,9 @@ impl DocumentEventHandler {
     pub(crate) fn handle_pending_input_events(&self, can_gc: CanGc) {
         let _realm = enter_realm(&*self.window);
 
-        // Reset the mouse event index.
+        // Reset the mouse and wheel event indices.
         *self.mouse_move_event_index.borrow_mut() = None;
+        *self.wheel_event_index.borrow_mut() = None;
         let pending_input_events = mem::take(&mut *self.pending_input_events.borrow_mut());
 
         for event in pending_input_events {
@@ -597,7 +632,7 @@ impl DocumentEventHandler {
         );
 
         // Send pointermove event before mousemove.
-        let pointer_event = mouse_event.to_pointer_event("pointermove", can_gc);
+        let pointer_event = mouse_event.to_pointer_event(Atom::from("pointermove"), can_gc);
         pointer_event
             .upcast::<Event>()
             .fire(new_target.upcast(), can_gc);
@@ -730,9 +765,9 @@ impl DocumentEventHandler {
             return;
         }
 
-        let mouse_event_type_string = match event.action {
-            embedder_traits::MouseButtonAction::Up => "mouseup",
-            embedder_traits::MouseButtonAction::Down => "mousedown",
+        let mouse_event_type = match event.action {
+            embedder_traits::MouseButtonAction::Up => atom!("mouseup"),
+            embedder_traits::MouseButtonAction::Down => atom!("mousedown"),
         };
 
         // From <https://w3c.github.io/uievents/#event-type-mousedown>
@@ -748,7 +783,7 @@ impl DocumentEventHandler {
         }
 
         let dom_event = DomRoot::upcast::<Event>(MouseEvent::for_platform_button_event(
-            mouse_event_type_string,
+            mouse_event_type,
             event,
             input_event.pressed_mouse_buttons,
             &self.window,
@@ -774,7 +809,7 @@ impl DocumentEventHandler {
                 let pointer_event = dom_event
                     .downcast::<MouseEvent>()
                     .unwrap()
-                    .to_pointer_event(event_type, can_gc);
+                    .to_pointer_event(event_type.into(), can_gc);
 
                 pointer_event.upcast::<Event>().fire(node.upcast(), can_gc);
 
@@ -784,14 +819,14 @@ impl DocumentEventHandler {
                 // delegate the focus target into its shadow host.
                 // TODO: This focus delegation should be done
                 // with shadow DOM delegateFocus attribute.
-                let target_el = element.find_focusable_shadow_host_if_necessary();
+                let target_el = element.find_click_focusable_shadow_host_if_necessary();
 
                 let document = self.window.Document();
                 document.begin_focus_transaction();
 
                 // Try to focus `el`. If it's not focusable, focus the document instead.
-                document.request_focus(None, FocusInitiator::Local, can_gc);
-                document.request_focus(target_el.as_deref(), FocusInitiator::Local, can_gc);
+                document.request_focus(None, FocusInitiator::Click, can_gc);
+                document.request_focus(target_el.as_deref(), FocusInitiator::Click, can_gc);
 
                 // Step 7. Let result = dispatch event at target
                 let result = dom_event.dispatch(node.upcast(), false, can_gc);
@@ -799,7 +834,7 @@ impl DocumentEventHandler {
                 // Step 8. If result is true and target is a focusable area
                 // that is click focusable, then Run the focusing steps at target.
                 if result && document.has_focus_transaction() {
-                    document.commit_focus_transaction(FocusInitiator::Local, can_gc);
+                    document.commit_focus_transaction(FocusInitiator::Click, can_gc);
                 }
 
                 // Step 9. If mbutton is the secondary mouse button, then
@@ -830,7 +865,7 @@ impl DocumentEventHandler {
                 let pointer_event = dom_event
                     .downcast::<MouseEvent>()
                     .unwrap()
-                    .to_pointer_event(event_type, can_gc);
+                    .to_pointer_event(event_type.into(), can_gc);
 
                 pointer_event.upcast::<Event>().fire(node.upcast(), can_gc);
 
@@ -883,14 +918,14 @@ impl DocumentEventHandler {
         // > The click event type MUST be dispatched on the topmost event target indicated by the
         // > pointer, when the user presses down and releases the primary pointer button.
         // For nodes inside a text input UA shadow DOM, dispatch dblclick at the shadow host.
-        let delegated = element.find_focusable_shadow_host_if_necessary();
+        let delegated = element.find_click_focusable_shadow_host_if_necessary();
         let element = delegated.as_deref().unwrap_or(element);
         self.most_recently_clicked_element.set(Some(element));
 
         let click_count = self.click_counting_info.borrow().count;
         element.set_click_in_progress(true);
         MouseEvent::for_platform_button_event(
-            "click",
+            atom!("click"),
             event,
             input_event.pressed_mouse_buttons,
             &self.window,
@@ -913,7 +948,7 @@ impl DocumentEventHandler {
         // even numbered clicks is a series of double clicks.
         if click_count % 2 == 0 {
             MouseEvent::for_platform_button_event(
-                "dblclick",
+                Atom::from("dblclick"),
                 event,
                 input_event.pressed_mouse_buttons,
                 &self.window,
@@ -937,12 +972,12 @@ impl DocumentEventHandler {
     ) {
         // <https://w3c.github.io/uievents/#contextmenu>
         let menu_event = PointerEvent::new(
-            &self.window,                   // window
-            DOMString::from("contextmenu"), // type
-            EventBubbles::Bubbles,          // can_bubble
-            EventCancelable::Cancelable,    // cancelable
-            Some(&self.window),             // view
-            0,                              // detail
+            &self.window,                // window
+            "contextmenu".into(),        // type
+            EventBubbles::Bubbles,       // can_bubble
+            EventCancelable::Cancelable, // cancelable
+            Some(&self.window),          // view
+            0,                           // detail
             hit_test_result.point_in_frame.to_i32(),
             hit_test_result.point_in_frame.to_i32(),
             hit_test_result
@@ -1193,7 +1228,7 @@ impl DocumentEventHandler {
 
         let touch_event = TouchEvent::new(
             window,
-            DOMString::from(event_name),
+            event_name.into(),
             EventBubbles::Bubbles,
             EventCancelable::from(event.is_cancelable()),
             EventComposed::Composed,
@@ -1261,7 +1296,7 @@ impl DocumentEventHandler {
 
         let keyevent = KeyboardEvent::new(
             &self.window,
-            DOMString::from(keyboard_event.event.state.event_type()),
+            keyboard_event.event.state.event_type().into(),
             true,
             true,
             Some(&self.window),
@@ -1301,7 +1336,7 @@ impl DocumentEventHandler {
             // https://w3c.github.io/uievents/#keypress-event-order
             let keypress_event = KeyboardEvent::new(
                 &self.window,
-                DOMString::from("keypress"),
+                atom!("keypress"),
                 true,
                 true,
                 Some(&self.window),
@@ -1336,7 +1371,7 @@ impl DocumentEventHandler {
         {
             if let Some(elem) = target.downcast::<Element>() {
                 elem.upcast::<Node>()
-                    .fire_synthetic_pointer_event_not_trusted(DOMString::from("click"), can_gc);
+                    .fire_synthetic_pointer_event_not_trusted(atom!("click"), can_gc);
             }
         }
 
@@ -1349,7 +1384,7 @@ impl DocumentEventHandler {
             ImeEvent::Dismissed => {
                 document.request_focus(
                     document.GetBody().as_ref().map(|e| e.upcast()),
-                    FocusInitiator::Local,
+                    FocusInitiator::Keyboard,
                     can_gc,
                 );
                 return Default::default();
@@ -1372,7 +1407,7 @@ impl DocumentEventHandler {
         let cancelable = composition_event.state == keyboard_types::CompositionState::Start;
         let event = CompositionEvent::new(
             &self.window,
-            DOMString::from(composition_event.state.event_type()),
+            composition_event.state.event_type().into(),
             true,
             cancelable,
             Some(&self.window),
@@ -1406,10 +1441,8 @@ impl DocumentEventHandler {
         };
 
         let node = el.upcast::<Node>();
-        let wheel_event_type_string = "wheel".to_owned();
         debug!(
-            "{}: on {:?} at {:?}",
-            wheel_event_type_string,
+            "wheel: on {:?} at {:?}",
             node.debug_str(),
             hit_test_result.point_in_frame
         );
@@ -1417,7 +1450,7 @@ impl DocumentEventHandler {
         // https://w3c.github.io/uievents/#event-wheelevents
         let dom_event = WheelEvent::new(
             &self.window,
-            DOMString::from(wheel_event_type_string),
+            "wheel".into(),
             EventBubbles::Bubbles,
             EventCancelable::Cancelable,
             Some(&self.window),
@@ -1662,7 +1695,7 @@ impl DocumentEventHandler {
         let clipboard_event = ClipboardEvent::new(
             &self.window,
             None,
-            DOMString::from(clipboard_event_type.as_str()),
+            clipboard_event_type.as_str().into(),
             EventBubbles::Bubbles,
             EventCancelable::Cancelable,
             None,
@@ -1823,6 +1856,10 @@ impl DocumentEventHandler {
             return;
         }
 
+        if self.maybe_handle_accesskey(event, can_gc) {
+            return;
+        }
+
         let scroll = match event.key() {
             Key::Named(NamedKey::ArrowDown) => KeyboardScroll::Down,
             Key::Named(NamedKey::ArrowLeft) => KeyboardScroll::Left,
@@ -1855,11 +1892,11 @@ impl DocumentEventHandler {
             let document = self.window.Document();
             document.begin_focus_transaction();
 
-            document.request_focus(None, FocusInitiator::Local, can_gc);
-            document.request_focus(Some(&*element), FocusInitiator::Local, can_gc);
+            document.request_focus(None, FocusInitiator::Keyboard, can_gc);
+            document.request_focus(Some(&*element), FocusInitiator::Keyboard, can_gc);
 
             assert!(document.has_focus_transaction());
-            document.commit_focus_transaction(FocusInitiator::Local, can_gc);
+            document.commit_focus_transaction(FocusInitiator::Keyboard, can_gc);
         }
     }
 
@@ -1878,9 +1915,12 @@ impl DocumentEventHandler {
         focused_element: DomRoot<Element>,
     ) -> Option<DomRoot<Element>> {
         let root_node = self.window.Document().GetDocumentElement()?;
-        let focused_element_tab_index = focused_element.tab_index();
+        let focused_element_tab_index = focused_element
+            .explicitly_set_tab_index()
+            .unwrap_or_default();
         let mut winning_node_and_tab_index: Option<(DomRoot<Element>, i32)> = None;
         let mut saw_focused_element = false;
+
         for node in root_node
             .upcast::<Node>()
             .traverse_preorder(ShadowIncluding::Yes)
@@ -1892,11 +1932,13 @@ impl DocumentEventHandler {
                 saw_focused_element = true;
                 continue;
             }
-            if !candidate_element.is_keyboard_focusable() {
+            if !candidate_element.is_sequentially_focusable() {
                 continue;
             }
 
-            let candidate_element_tab_index = candidate_element.tab_index();
+            let candidate_element_tab_index = candidate_element
+                .explicitly_set_tab_index()
+                .unwrap_or_default();
             let ordering =
                 compare_tab_indices(focused_element_tab_index, candidate_element_tab_index);
             match direction {
@@ -1977,17 +2019,19 @@ impl DocumentEventHandler {
             let Some(candidate_element) = DomRoot::downcast::<Element>(node) else {
                 continue;
             };
-            if !candidate_element.is_keyboard_focusable() {
+            if !candidate_element.is_sequentially_focusable() {
                 continue;
             }
 
-            let element_tab_index = candidate_element.tab_index();
+            let candidate_element_tab_index = candidate_element
+                .explicitly_set_tab_index()
+                .unwrap_or_default();
             match direction {
                 FocusDirection::Forward => {
                     // We can immediately return the first time we find an element with the lowest
                     // possible tab index (1). We are guaranteed not to find any lower tab index
                     // and all other equal tab indices are later in the DOM.
-                    if element_tab_index == 1 {
+                    if candidate_element_tab_index == 1 {
                         return Some(candidate_element);
                     }
 
@@ -1996,11 +2040,12 @@ impl DocumentEventHandler {
                     if winning_node_and_tab_index
                         .as_ref()
                         .is_none_or(|(_, winning_tab_index)| {
-                            compare_tab_indices(element_tab_index, *winning_tab_index) ==
+                            compare_tab_indices(candidate_element_tab_index, *winning_tab_index) ==
                                 Ordering::Less
                         })
                     {
-                        winning_node_and_tab_index = Some((candidate_element, element_tab_index));
+                        winning_node_and_tab_index =
+                            Some((candidate_element, candidate_element_tab_index));
                     }
                 },
                 FocusDirection::Backward => {
@@ -2010,11 +2055,12 @@ impl DocumentEventHandler {
                     if winning_node_and_tab_index
                         .as_ref()
                         .is_none_or(|(_, winning_tab_index)| {
-                            compare_tab_indices(element_tab_index, *winning_tab_index) !=
+                            compare_tab_indices(candidate_element_tab_index, *winning_tab_index) !=
                                 Ordering::Less
                         })
                     {
-                        winning_node_and_tab_index = Some((candidate_element, element_tab_index));
+                        winning_node_and_tab_index =
+                            Some((candidate_element, candidate_element_tab_index));
                     }
                 },
             }
@@ -2194,6 +2240,113 @@ impl DocumentEventHandler {
                 .upcast::<Event>()
                 .fire(target.upcast(), can_gc);
         }
+    }
+
+    pub(crate) fn has_assigned_access_key(&self, element: &HTMLElement) -> bool {
+        self.access_key_handlers
+            .borrow()
+            .values()
+            .any(|value| &**value == element)
+    }
+
+    pub(crate) fn unassign_access_key(&self, element: &HTMLElement) {
+        self.access_key_handlers
+            .borrow_mut()
+            .retain(|_, value| &**value != element)
+    }
+
+    pub(crate) fn assign_access_key(&self, element: &HTMLElement, character: char) {
+        let mut access_key_handlers = self.access_key_handlers.borrow_mut();
+        // If an element is already assigned this access key, ignore the request.
+        access_key_handlers
+            .entry(character)
+            .or_insert(Dom::from_ref(element));
+    }
+
+    fn maybe_handle_accesskey(&self, event: &KeyboardEvent, can_gc: CanGc) -> bool {
+        #[cfg(target_os = "macos")]
+        let access_key_modifiers = Modifiers::CONTROL | Modifiers::ALT;
+        #[cfg(not(target_os = "macos"))]
+        let access_key_modifiers = Modifiers::SHIFT | Modifiers::ALT;
+
+        if event.modifiers() != access_key_modifiers {
+            return false;
+        }
+
+        let Key::Character(ref string) = event.key() else {
+            return false;
+        };
+
+        let mut characters = string.chars();
+        let Some(character) = characters.next() else {
+            return false;
+        };
+        if characters.count() > 0 {
+            return false;
+        };
+
+        let Some(html_element) = self
+            .access_key_handlers
+            .borrow()
+            .get(&character)
+            .map(|html_element| html_element.as_rooted())
+        else {
+            return false;
+        };
+
+        // From <https://html.spec.whatwg.org/multipage/#the-accesskey-attribute>:
+        // > When the user presses the key combination corresponding to the assigned access key for
+        // > an element, if the element defines a command, the command's Hidden State facet is false
+        // > (visible), the command's Disabled State facet is also false (enabled), the element is in
+        // > a document that has a non-null browsing context, and neither the element nor any of its
+        // > ancestors has a hidden attribute specified, then the user agent must trigger the Action
+        // > of the command.
+        let Ok(command) = InteractiveElementCommand::try_from(&*html_element) else {
+            return false;
+        };
+
+        if command.disabled() || command.hidden() {
+            return false;
+        }
+
+        let node = html_element.upcast::<Node>();
+        if !node.is_connected() {
+            return false;
+        }
+
+        for node in node.inclusive_ancestors(ShadowIncluding::Yes) {
+            if node
+                .downcast::<HTMLElement>()
+                .is_some_and(|html_element| html_element.Hidden())
+            {
+                return false;
+            }
+        }
+
+        // This behavior is unspecified, but all browsers do this. When activating the element it is
+        // focused and scrolled into view.
+        //
+        // TODO: Focusing the element should likely be part of the default event handler for "click"
+        // events, but currently it's done only for real hardware click events and not synthetic
+        // ones. When that's fixed, this code can likely just scroll the element into view.
+        let element = html_element.upcast();
+        html_element
+            .owner_document()
+            .request_focus(Some(element), FocusInitiator::Script, can_gc);
+        let scroll_axis = ScrollAxisState {
+            position: ScrollLogicalPosition::Nearest,
+            requirement: ScrollRequirement::IfNotVisible,
+        };
+        element.scroll_into_view_with_options(
+            ScrollBehavior::Auto,
+            scroll_axis,
+            scroll_axis,
+            None,
+            None,
+        );
+
+        command.perform_action(can_gc);
+        true
     }
 }
 
