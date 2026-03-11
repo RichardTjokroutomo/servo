@@ -550,7 +550,7 @@ impl ShapedGlyph {
         // not matter here as Servo doesn't render any glyphs for whitespace.
         if character == '\t' {
             self.glyph_id = font.glyph_index(' ').unwrap_or_default();
-            self.advance = font.metrics.space_advance * 8;
+            // self.advance = font.metrics.space_advance * 8;
         }
 
         if let Some(letter_spacing) = shaping_options.letter_spacing_for_character(character) {

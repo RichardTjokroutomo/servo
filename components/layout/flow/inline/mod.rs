@@ -1572,6 +1572,7 @@ impl InlineFormattingContextLayout<'_> {
         font: &FontRef,
         bidi_level: Level,
         offsets: Option<TextRunOffsets>,
+        incoming_tab_stop_index: Option<usize>,
     ) {
         let inline_advance = glyph_store.total_advance();
         let flags = if glyph_store.is_whitespace() {
@@ -1626,11 +1627,21 @@ impl InlineFormattingContextLayout<'_> {
             self.current_line_segment.line_items.last_mut()
         {
             if *inline_box_identifier == current_inline_box_identifier &&
-                line_item.merge_if_possible(font_key, bidi_level, &glyph_store, &offsets)
+                line_item.merge_if_possible(
+                    font_key,
+                    bidi_level,
+                    &glyph_store,
+                    &offsets,
+                    incoming_tab_stop_index,
+                )
             {
                 return;
             }
         }
+        let temp_vec: Vec<usize> = match incoming_tab_stop_index {
+            Some(x) => vec![x],
+            _ => vec![],
+        };
 
         self.push_line_item_to_unbreakable_segment(LineItem::TextRun(
             current_inline_box_identifier,
@@ -1642,6 +1653,7 @@ impl InlineFormattingContextLayout<'_> {
                 font_key,
                 bidi_level,
                 offsets: offsets.map(Box::new),
+                tab_stop_indices: temp_vec,
             },
         ));
     }
