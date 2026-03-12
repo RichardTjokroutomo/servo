@@ -78,6 +78,9 @@ pub(crate) struct TextRunSegment {
     /// The shaped runs within this segment.
     #[conditional_malloc_size_of]
     pub runs: Vec<Arc<GlyphStore>>,
+
+    /// The vector containing the indices of all tabs.
+    pub tab_stops: Vec<usize>,
 }
 
 impl TextRunSegment {
@@ -87,7 +90,14 @@ impl TextRunSegment {
         bidi_level: Level,
         start_offset: usize,
         start_character_offset: usize,
+        tab_stops: &Vec<usize>,
     ) -> Self {
+        let mut tab_stops_vec = Vec::new();
+
+        for tab_stop in tab_stops {
+            tab_stops_vec.push(tab_stop.clone());
+        }
+
         Self {
             font,
             script,
@@ -96,6 +106,7 @@ impl TextRunSegment {
             character_range: start_character_offset..start_character_offset,
             runs: Vec::new(),
             break_at_start: false,
+            tab_stops: tab_stops_vec,
         }
     }
 
@@ -145,8 +156,31 @@ impl TextRunSegment {
         }
 
         let mut character_range_start = self.character_range.start;
+        let mut incoming_tab_stop_index = if self.tab_stops.len() > 0 { 0 } else { 1 };
+        let mut character_count = 0;
+        let mut glyph_store_counter = 0;
+
         for (run_index, run) in self.runs.iter().enumerate() {
             ifc.possibly_flush_deferred_forced_line_break();
+
+            character_count += run.character_count();
+            let temp_index = if incoming_tab_stop_index < self.tab_stops.len() &&
+                (character_count - 1) == self.tab_stops[incoming_tab_stop_index]
+            {
+                Some(glyph_store_counter)
+            } else {
+                None
+            };
+
+            if incoming_tab_stop_index < self.tab_stops.len() &&
+                (character_count - 1) == self.tab_stops[incoming_tab_stop_index] {
+                    ifc.cumulative_tab_advance += distance_to_next_tab_stop(ifc.current_line_segment.inline_size, self.font.metrics.space_advance);
+                }
+
+            match temp_index {
+                Some(_) => incoming_tab_stop_index += 1,
+                _ => {},
+            }
 
             // If this whitespace forces a line break, queue up a hard line break the next time we
             // see any content. We don't line break immediately, because we'd like to finish processing
@@ -178,8 +212,11 @@ impl TextRunSegment {
                 &self.font,
                 self.bidi_level,
                 offsets,
+                temp_index,
             );
+
             character_range_start = new_character_range_end;
+            glyph_store_counter += 1;
         }
     }
 
@@ -331,6 +368,10 @@ impl TextRunSegment {
             }
         }
     }
+}
+
+fn distance_to_next_tab_stop(cumulative_inline_advance: Au, tab_width: Au) -> Au {
+        return tab_width - (cumulative_inline_advance % tab_width);
 }
 
 /// A single [`TextRun`] for the box tree. These are all descendants of
@@ -488,6 +529,7 @@ impl TextRun {
         let lang = parent_style.get_font()._x_lang.clone();
         let text_run_text = &formatting_context_text[self.text_range.clone()];
         let char_iterator = TwoCharsAtATimeIterator::new(text_run_text.chars());
+        let mut tab_stops: Vec<usize> = Vec::new(); // character index of all \t characters in the formatting_context_text
 
         // The next current character index within the entire inline formatting context's text.
         let mut next_character_index = self.character_range.start;
@@ -500,6 +542,10 @@ impl TextRun {
 
             let current_byte_index = next_byte_index;
             next_byte_index += character.len_utf8();
+
+            if character == '\t' {
+                tab_stops.push(current_character_index);
+            }
 
             if char_does_not_change_font(character) {
                 continue;
@@ -541,13 +587,17 @@ impl TextRun {
                 bidi_level,
                 start_byte_index,
                 start_character_index,
+                &tab_stops,
             );
+
             if let Some(mut finished) = current.replace(new) {
                 // The end of the previous segment is the start of the next one.
                 finished.range.end = current_byte_index;
                 finished.character_range.end = current_character_index;
+                finished.tab_stops = tab_stops;
                 results.push(finished);
             }
+            tab_stops = Vec::new();
         }
 
         // Either we have a current segment or we only had control characters and whitespace. In both
@@ -560,6 +610,7 @@ impl TextRun {
                     Level::ltr(),
                     self.text_range.start,
                     self.character_range.start,
+                    &tab_stops,
                 )
             })
         }
@@ -568,6 +619,7 @@ impl TextRun {
         if let Some(mut last_segment) = current.take() {
             last_segment.range.end = self.text_range.end;
             last_segment.character_range.end = self.character_range.end;
+            last_segment.tab_stops = tab_stops;
             results.push(last_segment);
         }
 
