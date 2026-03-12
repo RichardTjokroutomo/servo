@@ -163,6 +163,25 @@ impl TextRunSegment {
         for (run_index, run) in self.runs.iter().enumerate() {
             ifc.possibly_flush_deferred_forced_line_break();
 
+            character_count += run.character_count();
+            let temp_index = if incoming_tab_stop_index < self.tab_stops.len() &&
+                (character_count - 1) == self.tab_stops[incoming_tab_stop_index]
+            {
+                Some(glyph_store_counter)
+            } else {
+                None
+            };
+
+            if incoming_tab_stop_index < self.tab_stops.len() &&
+                (character_count - 1) == self.tab_stops[incoming_tab_stop_index] {
+                    ifc.cumulative_tab_advance += distance_to_next_tab_stop(ifc.current_line_segment.inline_size, self.font.metrics.space_advance);
+                }
+
+            match temp_index {
+                Some(_) => incoming_tab_stop_index += 1,
+                _ => {},
+            }
+
             // If this whitespace forces a line break, queue up a hard line break the next time we
             // see any content. We don't line break immediately, because we'd like to finish processing
             // any ongoing inline boxes before ending the line.
@@ -186,20 +205,6 @@ impl TextRunSegment {
                     shared_selection,
                     character_range: character_range_start..new_character_range_end,
                 });
-
-            character_count += run.character_count();
-            let temp_index = if incoming_tab_stop_index < self.tab_stops.len() &&
-                (character_count - 1) == self.tab_stops[incoming_tab_stop_index]
-            {
-                Some(glyph_store_counter)
-            } else {
-                None
-            };
-
-            match temp_index {
-                Some(_) => incoming_tab_stop_index += 1,
-                _ => {},
-            }
 
             ifc.push_glyph_store_to_unbreakable_segment(
                 run.clone(),
@@ -363,6 +368,10 @@ impl TextRunSegment {
             }
         }
     }
+}
+
+fn distance_to_next_tab_stop(cumulative_inline_advance: Au, tab_width: Au) -> Au {
+        return tab_width - (cumulative_inline_advance % tab_width);
 }
 
 /// A single [`TextRun`] for the box tree. These are all descendants of

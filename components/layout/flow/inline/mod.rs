@@ -695,7 +695,7 @@ impl LineBlockSizes {
 /// of inline content or we reach the end of the formatting context.
 struct UnbreakableSegmentUnderConstruction {
     /// The size of this unbreakable segment in both dimension.
-    inline_size: Au,
+    pub inline_size: Au,
 
     /// The maximum block size that this segment has. This uses [`LineBlockSizes`] instead of a
     /// simple value, because the final block size depends on vertical alignment.
@@ -868,7 +868,7 @@ struct InlineFormattingContextLayout<'layout_data> {
     current_line: LineUnderConstruction,
 
     /// Information about the unbreakable line segment currently being laid out into [`LineItem`]s.
-    current_line_segment: UnbreakableSegmentUnderConstruction,
+    pub current_line_segment: UnbreakableSegmentUnderConstruction,
 
     /// After a forced line break (for instance from a `<br>` element) we wait to actually
     /// break the line until seeing more content. This allows ongoing inline boxes to finish,
@@ -915,6 +915,9 @@ struct InlineFormattingContextLayout<'layout_data> {
     /// by the boundary between two characters, the text-wrap-mode property of their nearest
     /// common ancestor is used.
     text_wrap_mode: TextWrapMode,
+
+    /// The total number of advances occupied by tabs in the current line. Resets when linebreak.
+    cumulative_tab_advance: Au,
 }
 
 impl InlineFormattingContextLayout<'_> {
@@ -1225,6 +1228,8 @@ impl InlineFormattingContextLayout<'_> {
                 physical_line_rect,
                 fragments,
             )));
+        
+        self.cumulative_tab_advance = Au(0);
     }
 
     /// Given the amount of whitespace trimmed from the line and taking into consideration
@@ -1703,7 +1708,7 @@ impl InlineFormattingContextLayout<'_> {
     fn unbreakable_segment_fits_on_line(&mut self) -> bool {
         let potential_line_size = LogicalVec2 {
             inline: self.current_line.inline_position + self.current_line_segment.inline_size -
-                self.current_line_segment.trailing_whitespace_size,
+                self.current_line_segment.trailing_whitespace_size + self.cumulative_tab_advance,
             block: self
                 .current_line_max_block_size_including_nested_containers()
                 .max(&self.current_line_segment.max_block_size)
@@ -1994,6 +1999,7 @@ impl InlineFormattingContext {
             depends_on_block_constraints: false,
             white_space_collapse: style_text.white_space_collapse,
             text_wrap_mode: style_text.text_wrap_mode,
+            cumulative_tab_advance: Au(0),
         };
 
         for item in self.inline_items.iter() {
