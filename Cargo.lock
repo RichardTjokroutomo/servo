@@ -331,7 +331,12 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
+<<<<<<< HEAD
  "windows-sys 0.61.2",
+=======
+ "windows-sys 0.60.2",
+ "windows-sys 0.60.2",
+>>>>>>> cb77895e77b (layout: add support for word-break: break-word property)
 ]
 
 [[package]]
@@ -4382,7 +4387,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.0",
+ "hashbrown 0.15.5",
  "serde",
  "serde_core",
 ]
