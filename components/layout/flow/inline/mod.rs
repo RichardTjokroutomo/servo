@@ -96,7 +96,6 @@ use script::layout_dom::ServoThreadSafeLayoutNode;
 use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::computed_values::line_break::T as LineBreak;
-use style::values::computed::OverflowWrap;
 use style::computed_values::text_wrap_mode::T as TextWrapMode;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::computed_values::word_break::T as WordBreak;
@@ -1823,10 +1822,10 @@ impl InlineFormattingContext {
             .last()
             .expect("Should have at least one SharedInlineStyle for the root of an IFC")
             .clone();
-        let (word_break, line_break, overflow_wrap) = {
+        let (word_break, line_break) = {
             let styles = shared_inline_styles.style.borrow();
             let text_style = styles.get_inherited_text();
-            (text_style.word_break, text_style.line_break, if text_style.word_break == WordBreak::BreakWord {OverflowWrap::Anywhere} else {text_style.overflow_wrap})
+            (text_style.word_break, text_style.line_break)
         };
 
         let mut options = LineBreakOptions::default();
@@ -1841,24 +1840,16 @@ impl InlineFormattingContext {
             LineBreak::Auto => LineBreakStrictness::Normal,
         };
 
-        // `WordBreak::BreakWord` is mapped to `LineBreakWordOption::Normal` because 
+        // `WordBreak::BreakWord` is mapped to `LineBreakWordOption::Normal` because
         // according to the CSS specifications (https://drafts.csswg.org/css-text/#word-break-property),
-        // "For compatibility with legacy content, the word-break property also supports a deprecated break-word keyword. 
-        // When specified, this has the same effect as word-break: normal and overflow-wrap: anywhere, 
+        // "For compatibility with legacy content, the word-break property also supports a deprecated break-word keyword.
+        // When specified, this has the same effect as word-break: normal and overflow-wrap: anywhere,
         // regardless of the actual value of the overflow-wrap property."
         options.word_option = match word_break {
             WordBreak::Normal | WordBreak::BreakWord => LineBreakWordOption::Normal,
             WordBreak::BreakAll => LineBreakWordOption::BreakAll,
             WordBreak::KeepAll => LineBreakWordOption::KeepAll,
         };
-
-        // According to the CSS specifications (https://drafts.csswg.org/css-text/#overflow-wrap-property),
-        // "An otherwise unbreakable sequence of characters may be broken at an arbitrary point 
-        // if there are no otherwise-acceptable break points in the line".
-        // Therefore, if `overflow-wrap: anywhere`, it means that linebreak can happen anywhere in a word.
-        if overflow_wrap == OverflowWrap::Anywhere {
-            options.word_option = LineBreakWordOption::BreakAll;
-        }
         options.ja_zh = false; // TODO: This should be true if the writing system is Chinese or Japanese.
 
         let mut new_linebreaker = LineBreaker::new(text_content.as_str(), options);

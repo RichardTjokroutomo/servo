@@ -202,18 +202,24 @@ impl TextRunSegment {
         let text_style = parent_style.get_inherited_text().clone();
 
         // According to the CSS specifications (https://drafts.csswg.org/css-text/#word-break-property),
-        // "For compatibility with legacy content, the word-break property also supports a deprecated break-word keyword. 
-        // When specified, this has the same effect as word-break: normal and overflow-wrap: anywhere, 
+        // "For compatibility with legacy content, the word-break property also supports a deprecated break-word keyword.
+        // When specified, this has the same effect as word-break: normal and overflow-wrap: anywhere,
         // regardless of the actual value of the overflow-wrap property."
         // Therefore, overflow_wrap will be mapped to `OverflowWrap::Anywhere` if `word-break: break-word`.
-        let overflow_wrap = if text_style.word_break == WordBreak::BreakWord {
+        let overflow_wrap_style = if text_style.word_break == WordBreak::BreakWord {
             OverflowWrap::Anywhere
         } else {
-            text_style.overflow_wrap.clone()
+            text_style.overflow_wrap
         };
-        let can_break_anywhere = text_style.word_break == WordBreak::BreakAll ||
-            overflow_wrap == OverflowWrap::Anywhere ||
-            overflow_wrap == OverflowWrap::BreakWord;
+        // And word_break itself will be mapped to `WordBreak::Normal` if `word-break: break-word`.
+        let word_break_style = if text_style.word_break == WordBreak::BreakWord {
+            WordBreak::Normal
+        } else {
+            text_style.word_break
+        };
+        let can_break_anywhere = word_break_style == WordBreak::BreakAll ||
+            overflow_wrap_style == OverflowWrap::Anywhere ||
+            overflow_wrap_style == OverflowWrap::BreakWord;
 
         let mut last_slice = self.range.start..self.range.start;
         for break_index in linebreak_iter {
@@ -266,7 +272,7 @@ impl TextRunSegment {
             // TODO: This should only happen for CJK text.
             if !ends_with_whitespace &&
                 *break_index != self.range.end &&
-                text_style.word_break == WordBreak::KeepAll &&
+                word_break_style == WordBreak::KeepAll &&
                 !can_break_anywhere
             {
                 continue;
