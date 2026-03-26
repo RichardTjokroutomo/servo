@@ -5,6 +5,7 @@
 use std::ops::Range;
 
 use icu_segmenter::{LineBreakOptions, LineSegmenter};
+use style::values::computed::OverflowWrap;
 
 pub(crate) struct LineBreaker {
     linebreaks: Vec<usize>,
@@ -12,8 +13,19 @@ pub(crate) struct LineBreaker {
 }
 
 impl LineBreaker {
-    pub(crate) fn new(string: &str, options: LineBreakOptions) -> Self {
-        let line_segmenter = LineSegmenter::new_auto_with_options(options);
+    pub(crate) fn new(
+        string: &str,
+        options: LineBreakOptions,
+        overflow_wrap: OverflowWrap,
+    ) -> Self {
+        let line_segmenter: Vec<usize> = if overflow_wrap != OverflowWrap::Anywhere {
+            LineSegmenter::new_auto_with_options(options)
+                .segment_str(string)
+                .skip(1)
+                .collect()
+        } else {
+            string.char_indices().map(|(idx, _)| idx).skip(1).collect()
+        };
         Self {
             // From https://docs.rs/icu_segmenter/1.5.0/icu_segmenter/struct.LineSegmenter.html
             // > For consistency with the grapheme, word, and sentence segmenters, there is always a
@@ -21,7 +33,7 @@ impl LineBreaker {
             // > opportunity.
             //
             // Skip this first line break opportunity, as it isn't interesting to us.
-            linebreaks: line_segmenter.segment_str(string).skip(1).collect(),
+            linebreaks: line_segmenter,
             current_offset: 0,
         }
     }
