@@ -1839,8 +1839,14 @@ impl InlineFormattingContext {
             // So it's fine if we always treat it as `normal`.
             LineBreak::Auto => LineBreakStrictness::Normal,
         };
+
+        // `WordBreak::BreakWord` is mapped to `LineBreakWordOption::Normal` because
+        // according to the CSS specifications (https://drafts.csswg.org/css-text/#word-break-property),
+        // "For compatibility with legacy content, the word-break property also supports a deprecated break-word keyword.
+        // When specified, this has the same effect as word-break: normal and overflow-wrap: anywhere,
+        // regardless of the actual value of the overflow-wrap property."
         options.word_option = match word_break {
-            WordBreak::Normal => LineBreakWordOption::Normal,
+            WordBreak::Normal | WordBreak::BreakWord => LineBreakWordOption::Normal,
             WordBreak::BreakAll => LineBreakWordOption::BreakAll,
             WordBreak::KeepAll => LineBreakWordOption::KeepAll,
         };
