@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use constellation_traits::BlobImpl;
 use indexmap::IndexMap;
 use pixels::RasterImage;
+use servo_constellation_traits::BlobImpl;
 
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::DomRoot;
@@ -71,7 +71,7 @@ impl Kind {
 /// <https://html.spec.whatwg.org/multipage/#drag-data-store-bitmap>
 #[derive(MallocSizeOf)]
 struct Bitmap {
-    #[ignore_malloc_size_of = "RasterImage"]
+    #[conditional_malloc_size_of]
     image: Option<Arc<RasterImage>>,
     x: i32,
     y: i32,

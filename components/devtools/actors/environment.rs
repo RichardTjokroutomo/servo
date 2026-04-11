@@ -10,26 +10,18 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::actor::{Actor, ActorEncode, ActorRegistry};
-use crate::actors::object::ObjectActorMsg;
+use crate::actors::object::{ObjectActorMsg, ObjectPropertyDescriptor};
 
 #[derive(Serialize)]
 struct EnvironmentBindings {
     arguments: Vec<Value>,
-    variables: HashMap<String, EnvironmentVariableDesc>,
+    variables: HashMap<String, ObjectPropertyDescriptor>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnvironmentFunction {
     display_name: String,
-}
-
-#[derive(Serialize)]
-struct EnvironmentVariableDesc {
-    value: String,
-    configurable: bool,
-    enumerable: bool,
-    writable: bool,
 }
 
 #[derive(Serialize)]
@@ -58,7 +50,7 @@ pub(crate) struct EnvironmentActorMsg {
 pub(crate) struct EnvironmentActor {
     name: String,
     environment: EnvironmentInfo,
-    parent: Option<String>,
+    parent_name: Option<String>,
 }
 
 impl Actor for EnvironmentActor {
@@ -71,23 +63,23 @@ impl EnvironmentActor {
     pub fn register(
         registry: &ActorRegistry,
         environment: EnvironmentInfo,
-        parent: Option<String>,
+        parent_name: Option<String>,
     ) -> String {
-        let name = registry.new_name::<Self>();
-        let actor = Self {
-            name: name.clone(),
-            parent,
+        let environment_name = registry.new_name::<Self>();
+        let environment_actor = Self {
+            name: environment_name.clone(),
+            parent_name,
             environment,
         };
-        registry.register(actor);
-        name
+        registry.register(environment_actor);
+        environment_name
     }
 }
 
 impl ActorEncode<EnvironmentActorMsg> for EnvironmentActor {
     fn encode(&self, registry: &ActorRegistry) -> EnvironmentActorMsg {
         let parent = self
-            .parent
+            .parent_name
             .as_ref()
             .map(|p| registry.find::<EnvironmentActor>(p))
             .map(|p| Box::new(p.encode(registry)));
@@ -110,15 +102,13 @@ impl ActorEncode<EnvironmentActorMsg> for EnvironmentActor {
                     .binding_variables
                     .clone()
                     .into_iter()
-                    .map(|(key, value)| {
+                    .map(|ref property_descriptor| {
                         (
-                            key,
-                            EnvironmentVariableDesc {
-                                value,
-                                configurable: false,
-                                enumerable: true,
-                                writable: false,
-                            },
+                            property_descriptor.name.clone(),
+                            ObjectPropertyDescriptor::from_property_descriptor(
+                                registry,
+                                property_descriptor,
+                            ),
                         )
                     })
                     .collect(),

@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use js::context::JSContext;
 use js::conversions::jsstr_to_string;
 use js::jsapi::{HandleValue as RawHandleValue, IsCyclicModule, JSObject, ModuleType};
 use js::jsval::{ObjectValue, UndefinedValue};
@@ -35,8 +36,9 @@ use crate::dom::promise::Promise;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::realms::{InRealm, enter_auto_realm};
 use crate::script_module::{
-    ModuleHandler, ModuleObject, ModuleOwner, ModuleTree, RethrowError, ScriptFetchOptions,
-    fetch_a_single_module_script, gen_type_error, module_script_from_reference_private,
+    ModuleFetchClient, ModuleHandler, ModuleObject, ModuleOwner, ModuleTree, RethrowError,
+    ScriptFetchOptions, fetch_a_single_module_script, gen_type_error,
+    module_script_from_reference_private,
 };
 use crate::script_runtime::{CanGc, IntroductionType};
 
@@ -63,7 +65,8 @@ pub(crate) struct LoadState {
     pub(crate) error_to_rethrow: RefCell<Option<RethrowError>>,
     #[no_trace]
     pub(crate) destination: Destination,
-    pub(crate) fetch_client: ModuleOwner,
+    #[no_trace]
+    pub(crate) fetch_client: ModuleFetchClient,
 }
 
 /// <https://tc39.es/ecma262/#graphloadingstate-record>
@@ -385,7 +388,7 @@ fn continue_dynamic_import(
                 Some(Box::new(OnRejectedHandler {
                     promise: inner_promise,
                 })),
-                CanGc::note(),
+                CanGc::deprecated_note(),
             );
             let in_realm = InRealm::Already(&in_realm_proof);
             evaluate_promise.append_native_handler(&handler, in_realm, CanGc::from_cx(cx));
@@ -425,7 +428,7 @@ pub(crate) fn host_load_imported_module(
 ) {
     // Step 1. Let settingsObject be the current settings object.
     let realm = CurrentRealm::assert(cx);
-    let global_scope = GlobalScope::from_current_realm(&realm);
+    let mut global_scope = GlobalScope::from_current_realm(&realm);
 
     // TODO Step 2. If settingsObject's global object implements WorkletGlobalScope or ServiceWorkerGlobalScope and loadState is undefined, then:
 
@@ -443,15 +446,24 @@ pub(crate) fn host_load_imported_module(
         ),
         None => (
             // Step 4. Let originalFetchOptions be the default script fetch options.
-            ScriptFetchOptions::default_classic_script(&global_scope),
+            ScriptFetchOptions::default_classic_script(),
             // Step 5. Let fetchReferrer be "client".
             global_scope.get_referrer(),
         ),
     };
 
+    // TODO: investigate providing a `ModuleOwner` to classic scripts.
+    let script_owner = referencing_script.and_then(|script| script.owner.clone());
+
     // Step 6.2. Set settingsObject to referencingScript's settings object.
-    // Note: We later set fetchClient to the `ModuleOwner` provided by loadState,
-    // which provides the `GlobalScope` that we will use for fetching.
+    if let Some(ref owner) = script_owner {
+        global_scope = owner.global();
+    }
+
+    // Note: loadState is undefined when performing a dynamic import, fall back to `ModuleOwner::DynamicModule`.
+    let owner = script_owner
+        .filter(|_| load_state.is_some())
+        .unwrap_or(ModuleOwner::DynamicModule(Trusted::new(&global_scope)));
 
     // Step 7 If referrer is a Cyclic Module Record and moduleRequest is equal to the first element of referrer.[[RequestedModules]], then:
     // Note: These substeps are implemented by `GetRequestedModuleSpecifier`,
@@ -507,56 +519,58 @@ pub(crate) fn host_load_imported_module(
             // Step 11. Let destination be "script".
             Destination::Script,
             // Step 12. Let fetchClient be settingsObject.
-            ModuleOwner::DynamicModule(Trusted::new(&global_scope)),
+            ModuleFetchClient::from_global_scope(&global_scope),
         ),
     };
 
-    let on_single_fetch_complete = move |module_tree: Option<Rc<ModuleTree>>| {
-        let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
-        let mut realm = CurrentRealm::assert(&mut cx);
-        let cx = &mut realm;
+    let on_single_fetch_complete =
+        move |cx: &mut JSContext, module_tree: Option<Rc<ModuleTree>>| {
+            let mut realm = CurrentRealm::assert(cx);
+            let cx = &mut realm;
 
-        // Step 1. Let completion be null.
-        let completion = match module_tree {
-            // Step 2. If moduleScript is null, then set completion to ThrowCompletion(a new TypeError).
-            None => Err(gen_type_error(
-                &global_scope,
-                Error::Type(c"Module fetching failed".to_owned()),
-                CanGc::from_cx(cx),
-            )),
-            Some(module_tree) => {
-                // Step 3. Otherwise, if moduleScript's parse error is not null, then:
-                // Step 3.1 Let parseError be moduleScript's parse error.
-                if let Some(parse_error) = module_tree.get_parse_error() {
-                    // Step 3.3 If loadState is not undefined and loadState.[[ErrorToRethrow]] is null,
-                    // set loadState.[[ErrorToRethrow]] to parseError.
-                    load_state.as_ref().inspect(|load_state| {
-                        load_state
-                            .error_to_rethrow
-                            .borrow_mut()
-                            .get_or_insert(parse_error.clone());
-                    });
+            // Step 1. Let completion be null.
+            let completion = match module_tree {
+                // Step 2. If moduleScript is null, then set completion to ThrowCompletion(a new TypeError).
+                None => Err(gen_type_error(
+                    &global_scope,
+                    Error::Type(c"Module fetching failed".to_owned()),
+                    CanGc::from_cx(cx),
+                )),
+                Some(module_tree) => {
+                    // Step 3. Otherwise, if moduleScript's parse error is not null, then:
+                    // Step 3.1 Let parseError be moduleScript's parse error.
+                    if let Some(parse_error) = module_tree.get_parse_error() {
+                        // Step 3.3 If loadState is not undefined and loadState.[[ErrorToRethrow]] is null,
+                        // set loadState.[[ErrorToRethrow]] to parseError.
+                        load_state.as_ref().inspect(|load_state| {
+                            load_state
+                                .error_to_rethrow
+                                .borrow_mut()
+                                .get_or_insert(parse_error.clone());
+                        });
 
-                    // Step 3.2 Set completion to ThrowCompletion(parseError).
-                    Err(parse_error.clone())
-                } else {
-                    // Step 4. Otherwise, set completion to NormalCompletion(moduleScript's record).
-                    Ok(module_tree)
-                }
-            },
+                        // Step 3.2 Set completion to ThrowCompletion(parseError).
+                        Err(parse_error.clone())
+                    } else {
+                        // Step 4. Otherwise, set completion to NormalCompletion(moduleScript's record).
+                        Ok(module_tree)
+                    }
+                },
+            };
+
+            // Step 5. Perform FinishLoadingImportedModule(referrer, moduleRequest, payload, completion).
+            finish_loading_imported_module(cx, referrer_module, specifier, payload, completion);
         };
-
-        // Step 5. Perform FinishLoadingImportedModule(referrer, moduleRequest, payload, completion).
-        finish_loading_imported_module(cx, referrer_module, specifier, payload, completion);
-    };
 
     // Step 14 Fetch a single imported module script given url, fetchClient, destination, fetchOptions, settingsObject,
     // fetchReferrer, moduleRequest, and onSingleFetchComplete as defined below.
     // If loadState is not undefined and loadState.[[PerformFetch]] is not null, pass loadState.[[PerformFetch]] along as well.
     // Note: we don't have access to the requested `ModuleObject`, so we pass only its type.
     fetch_a_single_imported_module_script(
+        cx,
         url,
         fetch_client,
+        owner,
         destination,
         fetch_options,
         fetch_referrer,
@@ -566,14 +580,17 @@ pub(crate) fn host_load_imported_module(
 }
 
 /// <https://html.spec.whatwg.org/multipage/#fetch-a-single-imported-module-script>
+#[expect(clippy::too_many_arguments)]
 fn fetch_a_single_imported_module_script(
+    cx: &mut JSContext,
     url: ServoUrl,
+    fetch_client: ModuleFetchClient,
     owner: ModuleOwner,
     destination: Destination,
     options: ScriptFetchOptions,
     referrer: Referrer,
     module_type: ModuleType,
-    on_complete: impl FnOnce(Option<Rc<ModuleTree>>) + 'static,
+    on_complete: impl FnOnce(&mut JSContext, Option<Rc<ModuleTree>>) + 'static,
 ) {
     // TODO Step 1. Assert: moduleRequest.[[Attributes]] does not contain any Record entry such that entry.[[Key]] is not "type",
     // because we only asked for "type" attributes in HostGetSupportedImportAttributes.
@@ -583,14 +600,16 @@ fn fetch_a_single_imported_module_script(
     // Step 3. If the result of running the module type allowed steps given moduleType and settingsObject is false,
     // then run onComplete given null, and return.
     match module_type {
-        ModuleType::Unknown => return on_complete(None),
+        ModuleType::Unknown => return on_complete(cx, None),
         ModuleType::JavaScript | ModuleType::JSON => (),
     }
 
     // Step 4. Fetch a single module script given url, fetchClient, destination, options, settingsObject, referrer,
     // moduleRequest, false, and onComplete. If performFetch was given, pass it along as well.
     fetch_a_single_module_script(
+        cx,
         url,
+        fetch_client,
         owner,
         destination,
         options,

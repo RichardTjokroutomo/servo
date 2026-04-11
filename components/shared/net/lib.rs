@@ -8,11 +8,6 @@ use std::fmt::{self, Debug, Display};
 use std::sync::{LazyLock, OnceLock};
 use std::thread::{self, JoinHandle};
 
-use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::{
-    self, CallbackSetter, GenericOneshotSender, GenericSend, GenericSender, SendResult,
-};
-use base::id::{CookieStoreId, HistoryStateId, PipelineId};
 use content_security_policy::{self as csp};
 use cookie::Cookie;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -31,7 +26,14 @@ use request::RequestId;
 use rustc_hash::FxHashMap;
 use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
+use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::generic_channel::{
+    self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericSend, GenericSender,
+    SendResult,
+};
+use servo_base::id::{CookieStoreId, HistoryStateId, PipelineId};
 use servo_url::{ImmutableOrigin, ServoUrl};
+use uuid::Uuid;
 
 use crate::fetch::headers::determine_nosniff;
 use crate::filemanager_thread::FileManagerThreadMsg;
@@ -77,13 +79,11 @@ pub enum LoadContext {
 
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct CustomResponse {
-    #[ignore_malloc_size_of = "Defined in hyper"]
     #[serde(
         deserialize_with = "::hyper_serde::deserialize",
         serialize_with = "::hyper_serde::serialize"
     )]
     pub headers: HeaderMap,
-    #[ignore_malloc_size_of = "Defined in hyper"]
     #[serde(
         deserialize_with = "::hyper_serde::deserialize",
         serialize_with = "::hyper_serde::serialize"
@@ -244,7 +244,6 @@ impl From<ReferrerPolicy> for ReferrerPolicyHeader {
 pub enum FetchResponseMsg {
     // todo: should have fields for transmitted/total bytes
     ProcessRequestBody(RequestId),
-    ProcessRequestEOF(RequestId),
     // todo: send more info about the response (or perhaps the entire Response)
     ProcessResponse(RequestId, Result<FetchMetadata, NetworkError>),
     ProcessResponseChunk(RequestId, DebugVec),
@@ -278,7 +277,6 @@ impl FetchResponseMsg {
     pub fn request_id(&self) -> RequestId {
         match self {
             FetchResponseMsg::ProcessRequestBody(id) |
-            FetchResponseMsg::ProcessRequestEOF(id) |
             FetchResponseMsg::ProcessResponse(id, ..) |
             FetchResponseMsg::ProcessResponseChunk(id, ..) |
             FetchResponseMsg::ProcessResponseEOF(id, ..) |
@@ -292,11 +290,6 @@ pub trait FetchTaskTarget {
     ///
     /// Fired when a chunk of the request body is transmitted
     fn process_request_body(&mut self, request: &Request);
-
-    /// <https://fetch.spec.whatwg.org/#process-request-end-of-file>
-    ///
-    /// Fired when the entire request finishes being transmitted
-    fn process_request_eof(&mut self, request: &Request);
 
     /// <https://fetch.spec.whatwg.org/#process-response>
     ///
@@ -357,10 +350,6 @@ impl FetchMetadata {
 impl FetchTaskTarget for IpcSender<FetchResponseMsg> {
     fn process_request_body(&mut self, request: &Request) {
         let _ = self.send(FetchResponseMsg::ProcessRequestBody(request.id));
-    }
-
-    fn process_request_eof(&mut self, request: &Request) {
-        let _ = self.send(FetchResponseMsg::ProcessRequestEOF(request.id));
     }
 
     fn process_response(&mut self, request: &Request, response: &Response) {
@@ -458,7 +447,6 @@ pub struct TlsSecurityInfo {
 
 impl FetchTaskTarget for IpcSender<WebSocketNetworkEvent> {
     fn process_request_body(&mut self, _: &Request) {}
-    fn process_request_eof(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, response: &Response) {
         if response.is_network_error() {
             let _ = self.send(WebSocketNetworkEvent::Fail);
@@ -478,7 +466,6 @@ pub struct DiscardFetch;
 
 impl FetchTaskTarget for DiscardFetch {
     fn process_request_body(&mut self, _: &Request) {}
-    fn process_request_eof(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, _: &Response) {}
     fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
     fn process_response_eof(&mut self, _: &Request, _: &Response) {}
@@ -553,6 +540,44 @@ impl ResourceThreads {
             .send(CoreResourceMsg::DeleteCookies(None, Some(sender)));
         let _ = receiver.recv();
     }
+
+    pub fn cookies_for_url(&self, url: ServoUrl, source: CookieSource) -> Vec<Cookie<'static>> {
+        let (sender, receiver) = generic_channel::channel().unwrap();
+        let _ = self
+            .core_thread
+            .send(CoreResourceMsg::GetCookiesForUrl(url, sender, source));
+        receiver
+            .recv()
+            .unwrap()
+            .into_iter()
+            .map(|cookie| cookie.into_inner())
+            .collect()
+    }
+
+    pub fn set_cookie_for_url(&self, url: ServoUrl, cookie: Cookie<'static>, source: CookieSource) {
+        let _ = self.core_thread.send(CoreResourceMsg::SetCookieForUrl(
+            url,
+            Serde(cookie),
+            source,
+            None,
+        ));
+    }
+
+    pub fn set_cookie_for_url_sync(
+        &self,
+        url: ServoUrl,
+        cookie: Cookie<'static>,
+        source: CookieSource,
+    ) {
+        let (sender, receiver) = generic_channel::channel().unwrap();
+        let _ = self.core_thread.send(CoreResourceMsg::SetCookieForUrl(
+            url,
+            Serde(cookie),
+            source,
+            Some(sender),
+        ));
+        let _ = receiver.recv();
+    }
 }
 
 impl GenericSend<CoreResourceMsg> for ResourceThreads {
@@ -614,8 +639,14 @@ pub enum CoreResourceMsg {
     Cancel(Vec<RequestId>),
     /// Initiate a fetch in response to processing a redirection
     FetchRedirect(RequestBuilder, ResponseInit, IpcSender<FetchResponseMsg>),
-    /// Store a cookie for a given originating URL
-    SetCookieForUrl(ServoUrl, Serde<Cookie<'static>>, CookieSource),
+    /// Store a cookie for a given originating URL.
+    /// If a sender is provided, the caller will block until the cookie is stored.
+    SetCookieForUrl(
+        ServoUrl,
+        Serde<Cookie<'static>>,
+        CookieSource,
+        Option<GenericSender<()>>,
+    ),
     /// Store a set of cookies for a given originating URL
     SetCookiesForUrl(ServoUrl, Vec<Serde<Cookie<'static>>>, CookieSource),
     SetCookieForUrlAsync(
@@ -624,12 +655,18 @@ pub enum CoreResourceMsg {
         Serde<Cookie<'static>>,
         CookieSource,
     ),
-    /// Retrieve the stored cookies for a given URL
-    GetCookiesForUrl(ServoUrl, IpcSender<Option<String>>, CookieSource),
+    /// Retrieve the stored cookies as a header string for a given URL.
+    GetCookieStringForUrl(ServoUrl, GenericSender<Option<String>>, CookieSource),
+    /// Retrieve the stored cookies as a vector for the given URL.
+    GetCookiesForUrl(
+        ServoUrl,
+        GenericSender<Vec<Serde<Cookie<'static>>>>,
+        CookieSource,
+    ),
     /// Get a cookie by name for a given originating URL
     GetCookiesDataForUrl(
         ServoUrl,
-        IpcSender<Vec<Serde<Cookie<'static>>>>,
+        GenericSender<Vec<Serde<Cookie<'static>>>>,
         CookieSource,
     ),
     GetCookieDataForUrlAsync(CookieStoreId, ServoUrl, Option<String>),
@@ -640,11 +677,15 @@ pub enum CoreResourceMsg {
     DeleteCookies(Option<ServoUrl>, Option<IpcSender<()>>),
     DeleteCookie(ServoUrl, String),
     DeleteCookieAsync(CookieStoreId, ServoUrl, String),
-    NewCookieListener(CookieStoreId, IpcSender<CookieAsyncResponse>, ServoUrl),
+    NewCookieListener(
+        CookieStoreId,
+        GenericCallback<CookieAsyncResponse>,
+        ServoUrl,
+    ),
     RemoveCookieListener(CookieStoreId),
     ListCookies(GenericSender<Vec<SiteDescriptor>>),
     /// Get a history state by a given history state id
-    GetHistoryState(HistoryStateId, IpcSender<Option<Vec<u8>>>),
+    GetHistoryState(HistoryStateId, GenericSender<Option<Vec<u8>>>),
     /// Set a history state for a given history state id
     SetHistoryState(HistoryStateId, Vec<u8>),
     /// Removes history states for the given ids
@@ -663,6 +704,20 @@ pub enum CoreResourceMsg {
     /// and exit
     Exit(GenericOneshotSender<()>),
     CollectMemoryReport(ReportsChan),
+    RevokeTokenForFile(BlobTokenRevocationRequest),
+    RefreshTokenForFile(BlobTokenRefreshRequest),
+}
+
+#[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct BlobTokenRevocationRequest {
+    pub blob_id: Uuid,
+    pub token: Uuid,
+}
+
+#[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct BlobTokenRefreshRequest {
+    pub blob_id: Uuid,
+    pub new_token_sender: GenericSender<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

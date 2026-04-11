@@ -15,6 +15,7 @@ from itertools import groupby
 from typing import cast, Optional, Any, Generic, TypeVar, TypeGuard
 from collections.abc import Generator, Callable, Iterator, Iterable
 from abc import abstractmethod
+from enum import IntEnum
 
 import operator
 import os
@@ -490,15 +491,22 @@ class CGMethodCall(CGThing):
 
             distinguishingIndex = method.distinguishingIndexForArgCount(argCount)
 
-            # We can't handle unions of non-object values at the distinguishing index.
+            # We can't handle unions of values with types other than
+            # object, string, number and boolean, at the distinguishing
+            # index.
             for (returnType, args) in possibleSignatures:
                 type = args[distinguishingIndex].type
                 if type.isUnion():
                     if type.nullable():
                         type = type.inner
                     for type in type.flatMemberTypes:
-                        if not (type.isObject() or type.isNonCallbackInterface()):
-                            raise TypeError("No support for unions with non-object variants "
+                        if not (type.isObject() or
+                                type.isNonCallbackInterface() or
+                                type.isString() or
+                                type.isNumeric() or
+                                type.isBoolean()):
+                            raise TypeError("No support for unions with variants of type "
+                                            "other than object, string, number and boolean "
                                             f"as distinguishing arguments yet: {args[distinguishingIndex].location}",
                                             )
 
@@ -547,19 +555,36 @@ class CGMethodCall(CGThing):
             if len(interfacesSigs) > 0:
                 # The spec says that we should check for "platform objects
                 # implementing an interface", but it's enough to guard on these
-                # being an object.  The code for unwrapping non-callback
+                # being an object, a string, a number, or a boolean, for
+                # each overload.  The code for unwrapping non-callback
                 # interfaces and typed arrays will just bail out and move on to
-                # the next overload if the object fails to unwrap correctly.  We
-                # could even not do the isObject() check up front here, but in
-                # cases where we have multiple object overloads it makes sense
-                # to do it only once instead of for each overload.  That will
-                # also allow the unwrapping test to skip having to do codegen
-                # for the null-or-undefined case, which we already handled
-                # above.
-                caseBody.append(CGGeneric(f"if {distinguishingArg}.get().is_object() {{"))
+                # the next overload if the object fails to unwrap correctly.
                 for idx, sig in enumerate(interfacesSigs):
-                    caseBody.append(CGIndenter(CGGeneric("'_block: {")))
+                    caseBody.append(CGGeneric("'_block: {"))
+
                     type = sig[1][distinguishingIndex].type
+                    conditions = []
+                    if type.isObject() or type.isNonCallbackInterface():
+                        conditions.append("is_object()")
+                    if type.isUnion():
+                        if type.nullable():
+                            innerType = type.inner
+                        else:
+                            innerType = type
+                        for memberType in innerType.flatMemberTypes:
+                            if memberType.isObject() or memberType.isNonCallbackInterface():
+                                conditions.append("is_object()")
+                            elif memberType.isString():
+                                conditions.append("is_string()")
+                            elif memberType.isNumeric():
+                                conditions.append("is_number()")
+                            elif memberType.isBoolean():
+                                conditions.append("is_boolean()")
+                    conditions = [f"{distinguishingArg}.get().{condition}" for condition in conditions]
+                    conditions = " || ".join(conditions)
+                    if conditions != "":
+                        conditions = "if " + conditions
+                    caseBody.append(CGIndenter(CGGeneric(f"{conditions} {{")))
 
                     # The argument at index distinguishingIndex can't possibly
                     # be unset here, because we've already checked that argc is
@@ -576,17 +601,17 @@ class CGMethodCall(CGThing):
                         f"arg{distinguishingIndex}",
                         needsAutoRoot=type_needs_auto_root(type))
 
-                    # Indent by 4, since we need to indent further than our "do" statement
-                    caseBody.append(CGIndenter(testCode, 4))
+                    # Indent by 8, since we need to indent further than our "do" statement
+                    caseBody.append(CGIndenter(testCode, 8))
                     # If we got this far, we know we unwrapped to the right
                     # interface, so just do the call.  Start conversion with
                     # distinguishingIndex + 1, since we already converted
                     # distinguishingIndex.
                     caseBody.append(CGIndenter(
-                        getPerSignatureCall(sig, distinguishingIndex + 1), 4))
+                        getPerSignatureCall(sig, distinguishingIndex + 1), 8))
                     caseBody.append(CGIndenter(CGGeneric("}")))
 
-                caseBody.append(CGGeneric("}"))
+                    caseBody.append(CGGeneric("}"))
 
             # XXXbz Now we're supposed to check for distinguishingArg being
             # an array or a platform object that supports indexed
@@ -1474,9 +1499,16 @@ def wrapForType(jsvalRef: str, result: str = 'result', successCode: str = 'true'
     return wrap
 
 
-def typeNeedsCx(type: IDLType | None, retVal: bool = False) -> bool:
+class Context(IntEnum):
+    No = 0
+    OldCx = 1
+    Cx = 2
+    CurrentRealm = 3
+
+
+def typeNeedsCx(type: IDLType | None, retVal: bool = False) -> Context:
     if type is None:
-        return False
+        return Context.No
     if type.nullable():
         assert isinstance(type, IDLNullableType)
         type = type.inner
@@ -1488,10 +1520,10 @@ def typeNeedsCx(type: IDLType | None, retVal: bool = False) -> bool:
         flatMemberTypes = type.unroll().flatMemberTypes
         assert flatMemberTypes is not None
 
-        return any(typeNeedsCx(t) for t in flatMemberTypes)
+        return max(typeNeedsCx(t) for t in flatMemberTypes)
     if retVal and type.isSpiderMonkeyInterface():
-        return True
-    return type.isAny() or type.isObject()
+        return Context.OldCx
+    return Context.OldCx if type.isAny() or type.isObject() else Context.No
 
 
 def returnTypeNeedsOutparam(type: IDLType | None) -> bool:
@@ -1963,7 +1995,8 @@ class MethodDefiner(PropertyDefiner):
             "length": methodLength(m),
             "flags": "JSPROP_READONLY" if crossorigin else "JSPROP_ENUMERATE",
             "condition": PropertyDefiner.getControllingCondition(m, descriptor),
-            "returnsPromise": m.returnsPromise()
+            "allowCrossOriginThis": m.getExtendedAttribute("CrossOriginCallable") is not None,
+            "returnsPromise": m.returnsPromise(),
         }
 
     def generateArray(self, array: list[dict[str, Any]], name: str) -> str:
@@ -1992,13 +2025,19 @@ class MethodDefiner(PropertyDefiner):
                     else:
                         exceptionToRejection = "false"
                     identifier = m.get("nativeName", m["name"])
+                    if m.get("allowCrossOriginThis", False):
+                        callPolicy = 'CrossOriginCallable'
+                    elif self.descriptor.interface.hasDescendantWithCrossOriginMembers:
+                        callPolicy = 'TargetClassMaybeCrossOrigin'
+                    else:
+                        callPolicy = 'Normal'
                     # Go through an intermediate type here, because it's not
                     # easy to tell whether the methodinfo is a JSJitInfo or
                     # a JSTypedMethodJitInfo here.  The compiler knows, though,
                     # so let it do the work.
                     jitinfo = (f"unsafe {{ {identifier}_methodinfo.get() }}"
                                " as *const _ as *const JSJitInfo")
-                    accessor = f"Some(generic_method::<{exceptionToRejection}>)"
+                    accessor = f"Some(generic_method::<D, call_policies::{callPolicy}, {exceptionToRejection}>)"
                 else:
                     if m.get("returnsPromise", False):
                         jitinfo = f"unsafe {{ {m.get('nativeName', m['name'])}_methodinfo.get() }}"
@@ -2102,10 +2141,22 @@ class AttrDefiner(PropertyDefiner):
                     exceptionToRejection = "true"
                 else:
                     exceptionToRejection = "false"
-                if attr.hasLegacyLenientThis():
-                    accessor = f"generic_lenient_getter::<{exceptionToRejection}>"
+
+                if attr.getExtendedAttribute("CrossOriginReadable"):
+                    assert not attr.legacyLenientThis, \
+                        "CrossOriginReadable && LenientThis: not supported"
+                    callPolicy = 'CrossOriginCallable'
+                elif self.descriptor.interface.hasDescendantWithCrossOriginMembers:
+                    if attr.legacyLenientThis:
+                        callPolicy = 'LenientThisTargetClassMaybeCrossOrigin'
+                    else:
+                        callPolicy = 'TargetClassMaybeCrossOrigin'
+                elif attr.legacyLenientThis:
+                    callPolicy = 'LenientThis'
                 else:
-                    accessor = f"generic_getter::<{exceptionToRejection}>"
+                    callPolicy = 'Normal'
+
+                accessor = f"generic_getter::<D, call_policies::{callPolicy}, {exceptionToRejection}>"
                 internalName = self.descriptor.internalNameFor(attr.identifier.name)
                 jitinfo = f"unsafe {{ {internalName}_getterinfo.get() }}"
 
@@ -2124,10 +2175,21 @@ class AttrDefiner(PropertyDefiner):
                 accessor = f'set_{self.descriptor.internalNameFor(attr.identifier.name)}::<D>'
                 jitinfo = "ptr::null()"
             else:
-                if attr.hasLegacyLenientThis():
-                    accessor = "generic_lenient_setter"
+                if attr.getExtendedAttribute("CrossOriginWritable"):
+                    assert not attr.legacyLenientThis, \
+                        "CrossOriginWritable && LenientThis: not supported"
+                    callPolicy = 'CrossOriginCallable'
+                elif self.descriptor.interface.hasDescendantWithCrossOriginMembers:
+                    if attr.legacyLenientThis:
+                        callPolicy = 'LenientThisTargetClassMaybeCrossOrigin'
+                    else:
+                        callPolicy = 'TargetClassMaybeCrossOrigin'
+                elif attr.legacyLenientThis:
+                    callPolicy = 'LenientThis'
                 else:
-                    accessor = "generic_setter"
+                    callPolicy = 'Normal'
+
+                accessor = f"generic_setter::<D, call_policies::{callPolicy}>"
                 internalName = self.descriptor.internalNameFor(attr.identifier.name)
                 jitinfo = f"unsafe {{ {internalName}_setterinfo.get() }}"
 
@@ -4090,10 +4152,8 @@ class CGDefineDOMInterfaceMethod(CGAbstractMethod):
         )
 
 
-def needCx(returnType: IDLType | None, arguments: Iterable[IDLArgument | FakeArgument], considerTypes: bool) -> bool:
-    return (considerTypes
-            and (typeNeedsCx(returnType, True)
-                 or any(typeNeedsCx(a.type) for a in arguments)))
+def needCx(returnType: IDLType | None, arguments: Iterable[IDLArgument | FakeArgument], considerTypes: bool) -> Context:
+    return max([typeNeedsCx(a.type) for a in arguments] + [typeNeedsCx(returnType, True)]) if considerTypes else Context.No
 
 
 class CGCallGenerator(CGThing):
@@ -4112,6 +4172,7 @@ class CGCallGenerator(CGThing):
                  extendedAttributes: list[str],
                  descriptor: Descriptor,
                  nativeMethodName: str,
+                 is_attr: bool,
                  static: bool,
                  object: str = "this",
                  hasCEReactions: bool = False
@@ -4139,7 +4200,17 @@ class CGCallGenerator(CGThing):
                 name = f"&{name}"
             args.append(CGGeneric(name))
 
-        needsCx = needCx(returnType, (a for (a, _) in arguments), True)
+        needsCx = False
+        is_implicit_cx_attribute = descriptor.implicitCxSetters and is_attr and nativeMethodName.startswith('Set')
+        match max([needCx(returnType, (a for (a, _) in arguments), True), Context.Cx if is_implicit_cx_attribute else Context.No]):
+            case Context.Cx:
+                descriptor.cxMethods.append(nativeMethodName)
+            case Context.CurrentRealm:
+                descriptor.realmMethods.append(nativeMethodName)
+            case Context.OldCx:
+                needsCx = True
+            case Context.No:
+                pass
 
         # Build up our actual call
         self.cgRoot = CGList([], "\n")
@@ -4157,7 +4228,7 @@ class CGCallGenerator(CGThing):
             if nativeMethodName in descriptor.inRealmMethods:
                 args.append(CGGeneric("InRealm::already(&AlreadyInRealm::assert_for_cx(SafeJSContext::from_ptr(cx.raw_cx())))"))
             if nativeMethodName in descriptor.canGcMethods:
-                args.append(CGGeneric("CanGc::note()"))
+                args.append(CGGeneric("CanGc::deprecated_note()"))
         if rootType:
             args.append(CGGeneric("retval.handle_mut()"))
 
@@ -4187,7 +4258,7 @@ class CGCallGenerator(CGThing):
         ]))
 
         if hasCEReactions:
-            self.cgRoot.append(CGGeneric("<D as DomHelpers<D>>::pop_current_element_queue(CanGc::note());\n"))
+            self.cgRoot.append(CGGeneric("<D as DomHelpers<D>>::pop_current_element_queue(cx);\n"))
 
         if isFallible:
             if static:
@@ -4199,7 +4270,7 @@ class CGCallGenerator(CGThing):
                 "let result = match result {\n"
                 "    Ok(result) => result,\n"
                 "    Err(e) => {\n"
-                f"        <D as DomHelpers<D>>::throw_dom_exception(SafeJSContext::from_ptr(cx.raw_cx()), {glob}, e, CanGc::note());\n"
+                f"        <D as DomHelpers<D>>::throw_dom_exception(SafeJSContext::from_ptr(cx.raw_cx()), {glob}, e, CanGc::deprecated_note());\n"
                 f"        return{errorResult};\n"
                 "    },\n"
                 "};"))
@@ -4279,7 +4350,7 @@ class CGPerSignatureCall(CGThing):
                 errorResult,
                 self.getArguments(), self.argsPre, returnType,
                 self.extendedAttributes, descriptor, nativeMethodName,
-                static, hasCEReactions=hasCEReactions))
+                idlNode.isAttr(), static, hasCEReactions=hasCEReactions))
 
         self.cgRoot = CGList(cgThings, "\n")
 
@@ -4509,7 +4580,7 @@ class CGMethodPromiseWrapper(CGAbstractExternMethod):
             if ok {
               return true;
             }
-            return exception_to_promise(cx, (*args).rval(), CanGc::note());
+            return exception_to_promise(cx, (*args).rval(), CanGc::deprecated_note());
             """,
             methodName=self.method.identifier.name,
             args=", ".join(arg.name for arg in self.args),
@@ -4544,7 +4615,7 @@ class CGGetterPromiseWrapper(CGAbstractExternMethod):
             if ok {
               return true;
             }
-            return exception_to_promise(cx, args.rval(), CanGc::note());
+            return exception_to_promise(cx, args.rval(), CanGc::deprecated_note());
             """,
             methodName=self.method_call,
             args=", ".join(arg.name for arg in self.args),
@@ -7036,7 +7107,7 @@ class CGInterfaceTrait(CGThing):
                                    m.type,
                                    m.type,
                                    cx_no_gc=name in descriptor.cx_no_gcMethods,
-                                   cx=name in descriptor.cxMethods,
+                                   cx=name in descriptor.cxMethods or descriptor.implicitCxSetters,
                                    realm=name in descriptor.realmMethods,
                                    inRealm=name in descriptor.inRealmMethods,
                                    canGc=name in descriptor.canGcMethods,
@@ -7717,7 +7788,7 @@ impl{self.generic} Clone for {self.makeClassName(self.dictionary)}{self.genericS
             "    type Config = ();\n"
             "    unsafe fn from_jsval(cx: *mut RawJSContext, value: HandleValue, _option: ())\n"
             f"                         -> Result<ConversionResult<{actualType}>, ()> {{\n"
-            f"        {selfName}::new(SafeJSContext::from_ptr(cx), value, CanGc::note())\n"
+            f"        {selfName}::new(SafeJSContext::from_ptr(cx), value, CanGc::deprecated_note())\n"
             "    }\n"
             "}\n"
             "\n"
@@ -8304,6 +8375,16 @@ def method_arguments(descriptorProvider: DescriptorProvider,
                      inRealm: bool = False,
                      canGc: bool = False
                      ) -> Iterator[tuple[str, str]]:
+    old_cx = False
+    match needCx(returnType, arguments, passJSBits):
+        case Context.Cx:
+            cx = True
+        case Context.CurrentRealm:
+            realm = True
+        case Context.OldCx:
+            old_cx = True
+        case Context.No:
+            pass
     if cx_no_gc:
         yield "cx", "&JSContext"
     elif cx:
@@ -8313,7 +8394,7 @@ def method_arguments(descriptorProvider: DescriptorProvider,
 
     safe_cx = cx or cx_no_gc or realm
 
-    if needCx(returnType, arguments, passJSBits) and not safe_cx:
+    if old_cx and not safe_cx:
         yield "cx", "SafeJSContext"
 
     for argument in arguments:
@@ -8813,7 +8894,7 @@ class CallbackOperationBase(CallbackMethod):
         return "if isCallable { aThisObj.get() } else { ObjectValue(self.callback()) }"
 
     def getCallableDecl(self) -> str:
-        getCallableFromProp = f'self.parent.get_callable_property(cx, "{self.methodName}")?'
+        getCallableFromProp = f'self.parent.get_callable_property(cx, c"{self.methodName}")?'
         if not self.singleOperation:
             return f'rooted!(&in(cx) let callable =\n{getCallableFromProp});\n'
         callable = CGIndenter(
@@ -9346,3 +9427,38 @@ impl Clone for TopTypeId {
 
         return CGGeneric((base_template.replace('${apis}', '\n'.join(apis))
                                        .replace('${interfaces}', '\n'.join(interfaces))))
+
+    @staticmethod
+    def ContentEventHandlerNames(config: Configuration) -> CGThing:
+        """Generate the sorted list of content event handler attribute names
+        by inspecting WebIDL definitions for interfaces that inherit from
+        HTMLElement or SVGElement."""
+        EVENT_HANDLER_CALLBACKS = {
+            "EventHandlerNonNull",
+            "OnErrorEventHandlerNonNull",
+            "OnBeforeUnloadEventHandlerNonNull",
+        }
+
+        handler_names: set[str] = set()
+
+        for descriptor in config.getDescriptors(isCallback=False, isIteratorInterface=False):
+            # Only include interfaces that inherit from HTMLElement or
+            # SVGElement, to avoid non-content event handlers like
+            # Document.onreadystatechange or XMLHttpRequest handlers.
+            chain = descriptor.prototypeChain
+            if "HTMLElement" not in chain and "SVGElement" not in chain:
+                continue
+
+            for member in descriptor.interface.members:
+                if not member.isAttr():
+                    continue
+                if not member.type.isCallback():
+                    continue
+                # pyrefly: ignore  # missing-attribute
+                callback = member.type.unroll().callback
+                if callback.identifier.name in EVENT_HANDLER_CALLBACKS:
+                    handler_names.add(member.identifier.name)
+
+        sorted_names = sorted(handler_names)
+        lines = [f'    "{name}",' for name in sorted_names]
+        return CGGeneric("[\n" + "\n".join(lines) + "\n]\n")

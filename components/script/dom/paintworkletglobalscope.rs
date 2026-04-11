@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use base::id::{PipelineId, WebViewId};
 use crossbeam_channel::{Sender, unbounded};
 use dom_struct::dom_struct;
 use euclid::{Scale, Size2D};
@@ -25,6 +24,7 @@ use js::rust::wrappers::{Call, Construct1};
 use net_traits::image_cache::ImageCache;
 use pixels::PixelFormat;
 use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter};
+use servo_base::id::{PipelineId, WebViewId};
 use servo_config::pref;
 use servo_url::ServoUrl;
 use style_traits::{CSSPixel, SpeculativePainter};
@@ -153,7 +153,7 @@ impl PaintWorkletGlobalScope {
                     let map = StylePropertyMapReadOnly::from_iter(
                         self.upcast(),
                         properties.iter().cloned(),
-                        CanGc::note(),
+                        CanGc::deprecated_note(),
                     );
                     let result =
                         self.draw_a_paint_image(&name, size, device_pixel_ratio, &map, &arguments);
@@ -179,7 +179,7 @@ impl PaintWorkletGlobalScope {
                     let map = StylePropertyMapReadOnly::from_iter(
                         self.upcast(),
                         properties.iter().cloned(),
-                        CanGc::note(),
+                        CanGc::deprecated_note(),
                     );
                     let result =
                         self.draw_a_paint_image(&name, size, device_pixel_ratio, &map, &arguments);
@@ -219,7 +219,7 @@ impl PaintWorkletGlobalScope {
             device_pixel_ratio,
             properties,
             arguments,
-            CanGc::note(),
+            CanGc::deprecated_note(),
         )
     }
 
@@ -516,9 +516,9 @@ impl PaintWorkletGlobalScopeMethods<crate::DomTypeHolder> for PaintWorkletGlobal
         }
 
         // Step 4-6.
-        let mut property_names: Vec<String> =
+        let property_names: Vec<String> =
             get_property(cx, paint_obj.handle(), c"inputProperties", ())?.unwrap_or_default();
-        let properties = property_names.drain(..).map(Atom::from).collect();
+        let properties = property_names.into_iter().map(Atom::from).collect();
 
         // Step 7-9.
         let input_arguments: Vec<String> =
@@ -555,7 +555,7 @@ impl PaintWorkletGlobalScopeMethods<crate::DomTypeHolder> for PaintWorkletGlobal
         }
 
         // Step 19.
-        let Some(context) = PaintRenderingContext2D::new(self, CanGc::note()) else {
+        let Some(context) = PaintRenderingContext2D::new(self, CanGc::deprecated_note()) else {
             return Err(Error::Operation(None));
         };
         let definition = PaintDefinition::new(

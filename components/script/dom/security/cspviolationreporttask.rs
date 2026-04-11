@@ -183,17 +183,21 @@ struct CSPReportUriFetchListener {
 impl FetchResponseListener for CSPReportUriFetchListener {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         _ = fetch_metadata;
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        chunk: Vec<u8>,
+    ) {
         _ = chunk;
     }
 
@@ -204,7 +208,7 @@ impl FetchResponseListener for CSPReportUriFetchListener {
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        submit_timing(&self, &response, &timing, CanGc::from_cx(cx))
+        submit_timing(cx, &self, &response, &timing)
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, _violations: Vec<Violation>) {}

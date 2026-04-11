@@ -4,7 +4,6 @@
 
 use std::io::{Read, Seek, Write};
 
-use base::id::PipelineId;
 use crossbeam_channel::Sender;
 use cssparser::SourceLocation;
 use encoding_rs::UTF_8;
@@ -15,6 +14,7 @@ use net_traits::{
     ResourceFetchTiming,
 };
 use servo_arc::Arc;
+use servo_base::id::PipelineId;
 use servo_config::pref;
 use servo_url::ServoUrl;
 use style::context::QuirksMode;
@@ -335,9 +335,12 @@ impl StylesheetContext {
 impl FetchResponseListener for StylesheetContext {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
-    fn process_response(&mut self, _: RequestId, metadata: Result<FetchMetadata, NetworkError>) {
+    fn process_response(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        metadata: Result<FetchMetadata, NetworkError>,
+    ) {
         if let Ok(FetchMetadata::Filtered {
             filtered: FilteredMetadata::Opaque | FilteredMetadata::OpaqueRedirect(_),
             ..
@@ -352,7 +355,12 @@ impl FetchResponseListener for StylesheetContext {
         });
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, mut payload: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        mut payload: Vec<u8>,
+    ) {
         self.data.append(&mut payload);
     }
 
@@ -363,7 +371,7 @@ impl FetchResponseListener for StylesheetContext {
         status: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        network_listener::submit_timing(&self, &status, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &status, &timing);
 
         let document = self.document.root();
         let Some(metadata) = self.metadata.as_ref() else {

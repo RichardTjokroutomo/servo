@@ -143,19 +143,19 @@ impl HTMLDetailsElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLDetailsElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLDetailsElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -476,10 +476,10 @@ impl VirtualMethods for HTMLDetailsElement {
                             DOMString::from(old_state),
                             DOMString::from(new_state),
                             None,
-                            CanGc::note(),
+                            CanGc::deprecated_note(),
                         );
                         let event = event.upcast::<Event>();
-                        event.fire(this.upcast::<EventTarget>(), CanGc::note());
+                        event.fire(this.upcast::<EventTarget>(), CanGc::deprecated_note());
                     }
                 }));
             self.upcast::<Node>().dirty(NodeDamage::Other);

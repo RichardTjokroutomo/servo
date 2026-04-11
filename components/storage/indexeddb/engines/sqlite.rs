@@ -4,12 +4,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base::threadpool::ThreadPool;
 use log::{error, info, warn};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use rusqlite::{Connection, Error, OptionalExtension, params};
 use sea_query::{Condition, Expr, ExprTrait, IntoCondition, SqliteQueryBuilder};
 use sea_query_rusqlite::RusqliteBinder;
+use servo_base::threadpool::ThreadPool;
 use storage_traits::indexeddb::{
     AsyncOperation, AsyncReadOnlyOperation, AsyncReadWriteOperation, BackendError,
     CreateObjectResult, IndexedDBIndex, IndexedDBKeyRange, IndexedDBKeyType, IndexedDBRecord,
@@ -22,6 +22,7 @@ use crate::shared::{DB_INIT_PRAGMAS, DB_PRAGMAS};
 
 mod create;
 mod database_model;
+mod encoding;
 mod object_data_model;
 mod object_store_index_model;
 mod object_store_model;
@@ -29,14 +30,14 @@ mod object_store_model;
 fn range_to_query(range: IndexedDBKeyRange) -> Condition {
     // Special case for optimization
     if let Some(singleton) = range.as_singleton() {
-        let encoded = postcard::to_stdvec(singleton).unwrap();
+        let encoded = encoding::serialize(singleton);
         return Expr::column(object_data_model::Column::Key)
             .eq(encoded)
             .into_condition();
     }
     let mut parts = vec![];
     if let Some(upper) = range.upper.as_ref() {
-        let upper_bytes = postcard::to_stdvec(upper).unwrap();
+        let upper_bytes = encoding::serialize(upper);
         let query = if range.upper_open {
             Expr::column(object_data_model::Column::Key).lt(upper_bytes)
         } else {
@@ -45,7 +46,7 @@ fn range_to_query(range: IndexedDBKeyRange) -> Condition {
         parts.push(query);
     }
     if let Some(lower) = range.lower.as_ref() {
-        let lower_bytes = postcard::to_stdvec(lower).unwrap();
+        let lower_bytes = encoding::serialize(lower);
         let query = if range.lower_open {
             Expr::column(object_data_model::Column::Key).gt(lower_bytes)
         } else {
@@ -69,6 +70,17 @@ pub struct SqliteEngine {
 }
 
 impl SqliteEngine {
+    fn object_store_by_name(
+        connection: &Connection,
+        store_name: &str,
+    ) -> Result<object_store_model::Model, Error> {
+        connection.query_row(
+            "SELECT * FROM object_store WHERE name = ?",
+            params![store_name.to_string()],
+            |row| object_store_model::Model::try_from(row),
+        )
+    }
+
     // TODO: intake dual pools
     pub fn new(
         base_dir: &Path,
@@ -181,6 +193,7 @@ impl SqliteEngine {
         key_range: IndexedDBKeyRange,
         count: Option<u32>,
     ) -> Result<Vec<object_data_model::Model>, Error> {
+        let query = range_to_query(key_range);
         let mut sql_query = sea_query::Query::select();
         sql_query
             .from(object_data_model::Column::Table)
@@ -189,7 +202,10 @@ impl SqliteEngine {
                 object_data_model::Column::Key,
                 object_data_model::Column::Data,
             ])
-            .and_where(Expr::col(object_data_model::Column::ObjectStoreId).is(store.id));
+            .and_where(query.and(Expr::col(object_data_model::Column::ObjectStoreId).is(store.id)));
+        if let Some(count) = count {
+            sql_query.limit(count as u64);
+        }
         let (sql, values) = sql_query.build_rusqlite(SqliteQueryBuilder);
         let mut stmt = connection.prepare(&sql)?;
         let models = stmt
@@ -197,33 +213,6 @@ impl SqliteEngine {
                 object_data_model::Model::try_from(row)
             })?
             .collect::<Result<Vec<_>, _>>()?;
-
-        let mut models_with_keys = models
-            .into_iter()
-            .map(|model| {
-                let key: IndexedDBKeyType = postcard::from_bytes(&model.key).unwrap();
-                (model, key)
-            })
-            .collect::<Vec<_>>();
-        // https://w3c.github.io/IndexedDB/#create-a-request-to-retrieve-multiple-items
-        // Step 8.2: Set direction to "next".
-        models_with_keys.sort_by(|(_, a_key), (_, b_key)| {
-            a_key
-                .partial_cmp(b_key)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // https://w3c.github.io/IndexedDB/#retrieve-multiple-items-from-an-object-store
-        // Step 3.1: Let records be the first count records in store's list of records
-        // whose key is in range.
-        let mut models = models_with_keys
-            .into_iter()
-            .filter(|(_, key)| key_range.contains(key))
-            .map(|(model, _)| model)
-            .collect::<Vec<_>>();
-        if let Some(count) = count {
-            models.truncate(count as usize);
-        }
         Ok(models)
     }
 
@@ -265,7 +254,8 @@ impl SqliteEngine {
         should_overwrite: bool,
         key_generator_current_number: Option<i32>,
     ) -> Result<PutItemResult, Error> {
-        let serialized_key: Vec<u8> = postcard::to_stdvec(&key).unwrap();
+        let no_overwrite = !should_overwrite;
+        let serialized_key: Vec<u8> = encoding::serialize(&key);
         let existing_item = connection
             .prepare("SELECT * FROM object_data WHERE key = ? AND object_store_id = ?")
             .and_then(|mut stmt| {
@@ -274,21 +264,29 @@ impl SqliteEngine {
                 })
                 .optional()
             })?;
-        if should_overwrite || existing_item.is_none() {
+        if existing_item.is_some() {
+            if no_overwrite {
+                return Ok(PutItemResult::CannotOverwrite);
+            }
+            // Preserve `put()` semantics by replacing the stored value when the primary
+            // key already exists.
+            connection.execute(
+                "UPDATE object_data SET data = ? WHERE object_store_id = ? AND key = ?",
+                params![value, store.id, serialized_key],
+            )?;
+        } else {
             connection.execute(
                 "INSERT INTO object_data (object_store_id, key, data) VALUES (?, ?, ?)",
                 params![store.id, serialized_key, value],
             )?;
-            if let Some(next_key_generator_current_number) = key_generator_current_number {
-                connection.execute(
-                    "UPDATE object_store SET auto_increment = ? WHERE id = ?",
-                    params![next_key_generator_current_number, store.id],
-                )?;
-            }
-            Ok(PutItemResult::Key(key))
-        } else {
-            Ok(PutItemResult::CannotOverwrite)
         }
+        if let Some(next_key_generator_current_number) = key_generator_current_number {
+            connection.execute(
+                "UPDATE object_store SET auto_increment = ? WHERE id = ?",
+                params![next_key_generator_current_number, store.id],
+            )?;
+        }
+        Ok(PutItemResult::Key(key))
     }
 
     fn delete_item(
@@ -360,9 +358,29 @@ impl KvsEngine for SqliteEngine {
     }
 
     fn delete_store(&self, store_name: &str) -> Result<(), Self::Error> {
+        // https://www.w3.org/TR/IndexedDB-3/#dom-idbdatabase-deleteobjectstore
+        // Step 7. Destroy store.
+        let object_store = Self::object_store_by_name(&self.connection, store_name)?;
+
+        self.connection.execute(
+            "DELETE FROM index_data WHERE object_store_id = ?",
+            params![object_store.id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM unique_index_data WHERE object_store_id = ?",
+            params![object_store.id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM object_store_index WHERE object_store_id = ?",
+            params![object_store.id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM object_data WHERE object_store_id = ?",
+            params![object_store.id],
+        )?;
         let result = self.connection.execute(
-            "DELETE FROM object_store WHERE name = ?",
-            params![store_name.to_string()],
+            "DELETE FROM object_store WHERE id = ?",
+            params![object_store.id],
         )?;
         if result == 0 {
             Err(Error::QueryReturnedNoRows)
@@ -503,7 +521,7 @@ impl KvsEngine for SqliteEngine {
                             Self::get_all_keys(&connection, object_store, key_range, count)
                                 .map(|keys| {
                                     keys.into_iter()
-                                        .map(|k| postcard::from_bytes(&k).unwrap())
+                                        .map(|k| encoding::deserialize(&k).unwrap())
                                         .collect()
                                 })
                                 .map_err(|e| BackendError::DbErr(format!("{:?}", e))),
@@ -548,8 +566,8 @@ impl KvsEngine for SqliteEngine {
                                     records
                                         .into_iter()
                                         .map(|(key, data)| IndexedDBRecord {
-                                            key: postcard::from_bytes(&key).unwrap(),
-                                            primary_key: postcard::from_bytes(&key).unwrap(),
+                                            key: encoding::deserialize(&key).unwrap(),
+                                            primary_key: encoding::deserialize(&key).unwrap(),
                                             value: data,
                                         })
                                         .collect()
@@ -569,7 +587,7 @@ impl KvsEngine for SqliteEngine {
                     }) => {
                         let _ = callback.send(
                             Self::get_key(&connection, object_store, key_range)
-                                .map(|key| key.map(|k| postcard::from_bytes(&k).unwrap()))
+                                .map(|key| key.map(|k| encoding::deserialize(&k).unwrap()))
                                 .map_err(|e| BackendError::DbErr(format!("{:?}", e))),
                         );
                     },
@@ -743,11 +761,11 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
 
-    use base::generic_channel::{self, GenericReceiver, GenericSender};
-    use base::threadpool::ThreadPool;
     use profile_traits::generic_callback::GenericCallback;
     use profile_traits::time::ProfilerChan;
     use serde::{Deserialize, Serialize};
+    use servo_base::generic_channel::{self, GenericReceiver, GenericSender};
+    use servo_base::threadpool::ThreadPool;
     use servo_url::ImmutableOrigin;
     use storage_traits::indexeddb::{
         AsyncOperation, AsyncReadOnlyOperation, AsyncReadWriteOperation, CreateObjectResult,
@@ -756,6 +774,7 @@ mod tests {
     use url::Host;
 
     use crate::indexeddb::IndexedDBDescription;
+    use crate::indexeddb::engines::sqlite::encoding;
     use crate::indexeddb::engines::{KvsEngine, KvsOperation, KvsTransaction, SqliteEngine};
 
     fn test_origin() -> ImmutableOrigin {
@@ -926,6 +945,58 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_store_removes_store_records() {
+        let base_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let thread_pool = get_pool();
+        let db = SqliteEngine::new(
+            base_dir.path(),
+            &IndexedDBDescription {
+                name: "test_db".to_string(),
+                origin: test_origin(),
+            },
+            thread_pool,
+        )
+        .unwrap();
+
+        db.create_store("test_store", None, false)
+            .expect("Failed to create store");
+        let object_store = SqliteEngine::object_store_by_name(&db.connection, "test_store")
+            .expect("Failed to fetch store metadata");
+        SqliteEngine::put_item(
+            &db.connection,
+            object_store.clone(),
+            IndexedDBKeyType::Number(1.0),
+            vec![1, 2, 3],
+            true,
+            None,
+        )
+        .expect("Failed to insert item");
+
+        let row_count_before: i64 = db
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM object_data WHERE object_store_id = ?",
+                rusqlite::params![object_store.id],
+                |row| row.get(0),
+            )
+            .expect("Failed to count rows before delete");
+        assert_eq!(row_count_before, 1);
+
+        db.delete_store("test_store")
+            .expect("Failed to delete store");
+
+        let row_count_after: i64 = db
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM object_data WHERE object_store_id = ?",
+                rusqlite::params![object_store.id],
+                |row| row.get(0),
+            )
+            .expect("Failed to count rows after delete");
+        assert_eq!(row_count_after, 0);
+    }
+
+    #[test]
     fn test_async_operations() {
         fn get_channel<T>() -> (GenericSender<T>, GenericReceiver<T>)
         where
@@ -962,6 +1033,7 @@ mod tests {
         let put2 = get_channel();
         let put3 = get_channel();
         let put_dup = get_channel();
+        let put_overwrite = get_channel();
         let get_item_some = get_channel();
         let get_item_none = get_channel();
         let get_all_items = get_channel();
@@ -1014,6 +1086,16 @@ mod tests {
                             key: Some(IndexedDBKeyType::Number(1.0)),
                             value: vec![10, 11, 12],
                             should_overwrite: false,
+                            key_generator_current_number: None,
+                        }),
+                    },
+                    KvsOperation {
+                        store_name: store_name.to_owned(),
+                        operation: AsyncOperation::ReadWrite(AsyncReadWriteOperation::PutItem {
+                            callback: get_callback(put_overwrite.0),
+                            key: Some(IndexedDBKeyType::Number(1.0)),
+                            value: vec![13, 14, 15],
+                            should_overwrite: true,
                             key_generator_current_number: None,
                         }),
                     },
@@ -1074,21 +1156,103 @@ mod tests {
         put3.1.recv().unwrap().unwrap();
         let err = put_dup.1.recv().unwrap().unwrap();
         assert_eq!(err, PutItemResult::CannotOverwrite);
+        let overwritten = put_overwrite.1.recv().unwrap().unwrap();
+        assert_eq!(
+            overwritten,
+            PutItemResult::Key(IndexedDBKeyType::Number(1.0))
+        );
         let get_result = get_item_some.1.recv().unwrap();
         let value = get_result.unwrap();
-        assert_eq!(value, Some(vec![1, 2, 3]));
+        assert_eq!(value, Some(vec![13, 14, 15]));
         let get_result = get_item_none.1.recv().unwrap();
         let value = get_result.unwrap();
         assert_eq!(value, None);
         let all_items = get_all_items.1.recv().unwrap().unwrap();
         assert_eq!(all_items.len(), 3);
         // Check that all three items are present
-        assert!(all_items.contains(&vec![1, 2, 3]));
+        assert!(all_items.contains(&vec![13, 14, 15]));
         assert!(all_items.contains(&vec![4, 5, 6]));
         assert!(all_items.contains(&vec![7, 8, 9]));
         let amount = count.1.recv().unwrap().unwrap();
         assert_eq!(amount, 1);
         remove.1.recv().unwrap().unwrap();
         clear.1.recv().unwrap().unwrap();
+    }
+
+    #[test]
+    fn test_delete_item_range_respects_open_bounds() {
+        fn remaining_keys_after_delete(
+            lower: i32,
+            upper: i32,
+            lower_open: bool,
+            upper_open: bool,
+        ) -> Vec<i32> {
+            let base_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let thread_pool = get_pool();
+            let db = SqliteEngine::new(
+                base_dir.path(),
+                &IndexedDBDescription {
+                    name: "test_db".to_string(),
+                    origin: test_origin(),
+                },
+                thread_pool,
+            )
+            .unwrap();
+            let store_name = "test_store";
+            db.create_store(store_name, None, false)
+                .expect("Failed to create store");
+            let store = SqliteEngine::object_store_by_name(&db.connection, store_name)
+                .expect("Failed to get object store");
+
+            for key in 1..=10 {
+                SqliteEngine::put_item(
+                    &db.connection,
+                    store.clone(),
+                    IndexedDBKeyType::Number(key as f64),
+                    vec![key as u8],
+                    false,
+                    None,
+                )
+                .expect("Failed to seed object store");
+            }
+
+            SqliteEngine::delete_item(
+                &db.connection,
+                store.clone(),
+                IndexedDBKeyRange::new(
+                    Some(IndexedDBKeyType::Number(lower as f64)),
+                    Some(IndexedDBKeyType::Number(upper as f64)),
+                    lower_open,
+                    upper_open,
+                ),
+            )
+            .expect("Failed to delete key range");
+
+            SqliteEngine::get_all_keys(&db.connection, store, IndexedDBKeyRange::default(), None)
+                .expect("Failed to read remaining keys")
+                .into_iter()
+                .map(|raw_key| match encoding::deserialize(&raw_key).unwrap() {
+                    IndexedDBKeyType::Number(number) => number as i32,
+                    other => panic!("Expected numeric key, got {other:?}"),
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            remaining_keys_after_delete(3, 8, false, false),
+            vec![1, 2, 9, 10]
+        );
+        assert_eq!(
+            remaining_keys_after_delete(3, 8, true, false),
+            vec![1, 2, 3, 9, 10]
+        );
+        assert_eq!(
+            remaining_keys_after_delete(3, 8, false, true),
+            vec![1, 2, 8, 9, 10]
+        );
+        assert_eq!(
+            remaining_keys_after_delete(3, 8, true, true),
+            vec![1, 2, 3, 8, 9, 10]
+        );
     }
 }

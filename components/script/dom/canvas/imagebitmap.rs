@@ -5,14 +5,14 @@
 use std::cell::{Cell, Ref};
 use std::rc::Rc;
 
-use base::id::{ImageBitmapId, ImageBitmapIndex};
-use constellation_traits::SerializableImageBitmap;
 use dom_struct::dom_struct;
 use euclid::default::{Point2D, Rect, Size2D};
 use js::realm::CurrentRealm;
 use pixels::{CorsStatus, Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use rustc_hash::FxHashMap;
 use script_bindings::error::{Error, Fallible};
+use servo_base::id::{ImageBitmapId, ImageBitmapIndex};
+use servo_constellation_traits::SerializableImageBitmap;
 
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
@@ -329,7 +329,7 @@ impl ImageBitmap {
                         let promise = trusted_promise.root();
                         let image_bitmap = trusted_image_bitmap.root();
 
-                        promise.resolve_native(&image_bitmap, CanGc::note());
+                        promise.resolve_native(&image_bitmap, CanGc::deprecated_note());
                     }),
                 );
             };
@@ -345,7 +345,7 @@ impl ImageBitmap {
                 .queue(task!(reject_promise: move || {
                     let promise = trusted_promise.root();
 
-                    promise.reject_error(Error::InvalidState(None), CanGc::note());
+                    promise.reject_error(Error::InvalidState(None), CanGc::deprecated_note());
                 }));
         };
 

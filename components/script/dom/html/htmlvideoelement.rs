@@ -10,6 +10,7 @@ use euclid::default::Size2D;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::rust::HandleObject;
 use layout_api::{HTMLMediaData, MediaMetadata};
+use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::{
     ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable, ImageResponse,
     PendingImageId,
@@ -42,7 +43,7 @@ use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::fetch::{FetchCanceller, RequestWithGlobalScope};
 use crate::network_listener::{self, FetchResponseListener, ResourceTimingListener};
-use crate::script_runtime::CanGc;
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[dom_struct]
 pub(crate) struct HTMLVideoElement {
@@ -79,19 +80,19 @@ impl HTMLVideoElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLVideoElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLVideoElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -165,7 +166,12 @@ impl HTMLVideoElement {
         // the poster attribute's value, relative to the element's node
         // document.
         // Step 4. If url is failure, then return. There is no poster frame.
-        let poster_url = match self.owner_document().encoding_parse_a_url(poster_url) {
+        let global = self.owner_global();
+        let poster_url = match self
+            .owner_document()
+            .encoding_parse_a_url(poster_url)
+            .map(|url| ensure_blob_referenced_by_url_is_kept_alive(&global, url))
+        {
             Ok(url) => url,
             Err(_) => {
                 self.htmlmediaelement.set_poster_frame(None);
@@ -178,7 +184,7 @@ impl HTMLVideoElement {
         let window = self.owner_window();
         let image_cache = window.image_cache();
         let cache_result = image_cache.get_cached_image_status(
-            poster_url.clone(),
+            poster_url.url(),
             window.origin().immutable().clone(),
             None,
         );
@@ -222,7 +228,7 @@ impl HTMLVideoElement {
     /// <https://html.spec.whatwg.org/multipage/#poster-frame>
     fn do_fetch_poster_frame(
         &self,
-        poster_url: ServoUrl,
+        poster_url: UrlWithBlobClaim,
         id: PendingImageId,
         cx: &mut js::context::JSContext,
     ) {
@@ -251,12 +257,12 @@ impl HTMLVideoElement {
         LoadBlocker::terminate(blocker, cx);
         *blocker.borrow_mut() = Some(LoadBlocker::new(
             &self.owner_document(),
-            LoadType::Image(poster_url.clone()),
+            LoadType::Image(poster_url.url()),
         ));
 
         let context = PosterFrameFetchContext::new(
             self,
-            poster_url,
+            poster_url.url(),
             id,
             request.id,
             self.global().core_resource_thread(),
@@ -411,14 +417,13 @@ struct PosterFrameFetchContext {
 }
 
 impl FetchResponseListener for PosterFrameFetchContext {
-    fn process_request_body(&mut self, _: RequestId) {}
-
-    fn process_request_eof(&mut self, _: RequestId) {
+    fn process_request_body(&mut self, _: RequestId) {
         self.fetch_canceller.ignore()
     }
 
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -442,7 +447,12 @@ impl FetchResponseListener for PosterFrameFetchContext {
         }
     }
 
-    fn process_response_chunk(&mut self, request_id: RequestId, payload: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        request_id: RequestId,
+        payload: Vec<u8>,
+    ) {
         if self.cancelled {
             // An error was received previously, skip processing the payload.
             return;
@@ -465,7 +475,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        network_listener::submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {

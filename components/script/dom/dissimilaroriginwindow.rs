@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use base::id::PipelineId;
-use constellation_traits::{ScriptToConstellationMessage, StructuredSerializedData};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue, MutableHandleValue};
+use servo_base::id::PipelineId;
+use servo_constellation_traits::{ScriptToConstellationMessage, StructuredSerializedData};
 use servo_url::ServoUrl;
 
 use crate::dom::bindings::codegen::Bindings::DissimilarOriginWindowBinding;
@@ -189,7 +189,14 @@ impl DissimilarOriginWindowMethods<crate::DomTypeHolder> for DissimilarOriginWin
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-focus>
     fn Focus(&self) {
-        self.window_proxy().focus();
+        let browsing_context_id = self.window_proxy.browsing_context_id();
+        debug!("Initiating a focus operation for {browsing_context_id:?}");
+        self.globalscope
+            .script_to_constellation_chan()
+            .send(ScriptToConstellationMessage::FocusRemoteBrowsingContext(
+                browsing_context_id,
+            ))
+            .unwrap();
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-location>

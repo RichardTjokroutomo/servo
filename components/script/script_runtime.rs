@@ -125,9 +125,9 @@ pub(crate) enum ScriptThreadEventCategory {
     FontLoading,
     FormPlannedNavigation,
     GeolocationEvent,
-    HistoryEvent,
     ImageCacheMsg,
     InputEvent,
+    NavigationAndTraversalEvent,
     NetworkEvent,
     PortMessage,
     Rendering,
@@ -167,7 +167,9 @@ impl From<ScriptThreadEventCategory> for ProfilerCategory {
                 ProfilerCategory::ScriptPlannedNavigation
             },
             ScriptThreadEventCategory::GeolocationEvent => ProfilerCategory::ScriptGeolocationEvent,
-            ScriptThreadEventCategory::HistoryEvent => ProfilerCategory::ScriptHistoryEvent,
+            ScriptThreadEventCategory::NavigationAndTraversalEvent => {
+                ProfilerCategory::ScriptNavigationAndTraversalEvent
+            },
             ScriptThreadEventCategory::ImageCacheMsg => ProfilerCategory::ScriptImageCacheMsg,
             ScriptThreadEventCategory::InputEvent => ProfilerCategory::ScriptInputEvent,
             ScriptThreadEventCategory::NetworkEvent => ProfilerCategory::ScriptNetworkEvent,
@@ -214,7 +216,9 @@ impl From<ScriptThreadEventCategory> for ScriptHangAnnotation {
                 ScriptHangAnnotation::FormPlannedNavigation
             },
             ScriptThreadEventCategory::GeolocationEvent => ScriptHangAnnotation::GeolocationEvent,
-            ScriptThreadEventCategory::HistoryEvent => ScriptHangAnnotation::HistoryEvent,
+            ScriptThreadEventCategory::NavigationAndTraversalEvent => {
+                ScriptHangAnnotation::NavigationAndTraversalEvent
+            },
             ScriptThreadEventCategory::ImageCacheMsg => ScriptHangAnnotation::ImageCacheMsg,
             ScriptThreadEventCategory::NetworkEvent => ScriptHangAnnotation::NetworkEvent,
             ScriptThreadEventCategory::Rendering => ScriptHangAnnotation::Rendering,
@@ -473,12 +477,11 @@ unsafe extern "C" fn promise_rejection_tracker(
 
                 // Step 5-4.
                 global.task_manager().dom_manipulation_task_source().queue(
-                task!(rejection_handled_event: move || {
+                task!(rejection_handled_event: move |cx| {
                     let target = target.root();
-                    let cx = GlobalScope::get_cx();
                     let root_promise = trusted_promise.root();
 
-                    rooted!(in(*cx) let mut reason = UndefinedValue());
+                    rooted!(&in(cx) let mut reason = UndefinedValue());
                     unsafe{JS_GetPromiseResult(root_promise.reflector().get_jsobject(), reason.handle_mut())};
 
                     let event = PromiseRejectionEvent::new(
@@ -488,10 +491,10 @@ unsafe extern "C" fn promise_rejection_tracker(
                         EventCancelable::Cancelable,
                         root_promise,
                         reason.handle(),
-                        CanGc::note()
+                        CanGc::from_cx(cx),
                     );
 
-                    event.upcast::<Event>().fire(&target, CanGc::note());
+                    event.upcast::<Event>().fire(&target, CanGc::from_cx(cx));
                 })
             );
             },
@@ -1342,24 +1345,32 @@ unsafe extern "C" fn consume_stream(
     _mime_type: MimeType,
     _consumer: *mut JSStreamConsumer,
 ) -> bool {
-    let cx = unsafe { JSContext::from_ptr(cx) };
-    let in_realm_proof = AlreadyInRealm::assert_for_cx(cx);
-    let global = unsafe { GlobalScope::from_context(*cx, InRealm::Already(&in_realm_proof)) };
+    let mut cx = unsafe {
+        // SAFETY: We are in SM hook
+        js::context::JSContext::from_ptr(
+            NonNull::new(cx).expect("JSContext should not be null in SM hook"),
+        )
+    };
+    let cx = &mut cx;
+    let realm = CurrentRealm::assert(cx);
+    let global = GlobalScope::from_current_realm(&realm);
 
     // Step 2.1 Upon fulfillment of source, store the Response with value unwrappedSource.
     if let Ok(unwrapped_source) =
-        root_from_handleobject::<Response>(unsafe { RustHandleObject::from_raw(obj) }, *cx)
+        unsafe { root_from_handleobject::<Response>(RustHandleObject::from_raw(obj), cx.raw_cx()) }
     {
         // Step 2.2 Let mimeType be the result of extracting a MIME type from response’s header list.
-        let mimetype = unwrapped_source.Headers(CanGc::note()).extract_mime_type();
+        let mimetype = unwrapped_source
+            .Headers(CanGc::from_cx(cx))
+            .extract_mime_type();
 
         // Step 2.3 If mimeType is not `application/wasm`, return with a TypeError and abort these substeps.
         if !&mimetype[..].eq_ignore_ascii_case(b"application/wasm") {
             throw_dom_exception(
-                cx,
+                cx.into(),
                 &global,
                 Error::Type(c"Response has unsupported MIME type".to_owned()),
-                CanGc::note(),
+                CanGc::from_cx(cx),
             );
             return false;
         }
@@ -1369,10 +1380,10 @@ unsafe extern "C" fn consume_stream(
             DOMResponseType::Basic | DOMResponseType::Cors | DOMResponseType::Default => {},
             _ => {
                 throw_dom_exception(
-                    cx,
+                    cx.into(),
                     &global,
                     Error::Type(c"Response.type must be 'basic', 'cors' or 'default'".to_owned()),
-                    CanGc::note(),
+                    CanGc::from_cx(cx),
                 );
                 return false;
             },
@@ -1381,10 +1392,10 @@ unsafe extern "C" fn consume_stream(
         // Step 2.5 If response’s status is not an ok status, return with a TypeError and abort these substeps.
         if !unwrapped_source.Ok() {
             throw_dom_exception(
-                cx,
+                cx.into(),
                 &global,
                 Error::Type(c"Response does not have ok status".to_owned()),
-                CanGc::note(),
+                CanGc::from_cx(cx),
             );
             return false;
         }
@@ -1392,10 +1403,10 @@ unsafe extern "C" fn consume_stream(
         // Step 2.6.1 If response body is locked, return with a TypeError and abort these substeps.
         if unwrapped_source.is_locked() {
             throw_dom_exception(
-                cx,
+                cx.into(),
                 &global,
                 Error::Type(c"There was an error consuming the Response".to_owned()),
-                CanGc::note(),
+                CanGc::from_cx(cx),
             );
             return false;
         }
@@ -1403,10 +1414,10 @@ unsafe extern "C" fn consume_stream(
         // Step 2.6.2 If response body is alreaady consumed, return with a TypeError and abort these substeps.
         if unwrapped_source.is_disturbed() {
             throw_dom_exception(
-                cx,
+                cx.into(),
                 &global,
                 Error::Type(c"Response already consumed".to_owned()),
-                CanGc::note(),
+                CanGc::from_cx(cx),
             );
             return false;
         }
@@ -1414,10 +1425,10 @@ unsafe extern "C" fn consume_stream(
     } else {
         // Step 3 Upon rejection of source, return with reason.
         throw_dom_exception(
-            cx,
+            cx.into(),
             &global,
             Error::Type(c"expected Response or Promise resolving to Response".to_owned()),
-            CanGc::note(),
+            CanGc::from_cx(cx),
         );
         return false;
     }
@@ -1442,7 +1453,7 @@ unsafe extern "C" fn invoke_script_environment_preparer(
 
     run_a_script::<DomTypeHolder, _>(&global, || {
         if unsafe { !RunScriptEnvironmentPreparerClosure(*cx, closure) } {
-            report_pending_exception(cx, InRealm::Entered(&ar), CanGc::note());
+            report_pending_exception(cx, InRealm::Entered(&ar), CanGc::deprecated_note());
         };
     });
 }

@@ -13,7 +13,7 @@ use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::parser::ParserContext;
 use style::stylesheets::Origin;
-use style::values::specified::Length;
+use style::values::specified::LengthPercentage;
 use style_traits::ParsingMode;
 use uuid::Uuid;
 use xml5ever::serialize::TraversalScope;
@@ -61,17 +61,17 @@ impl SVGSVGElement {
 
     #[cfg_attr(crown, allow(crown::unrooted_must_root))]
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<SVGSVGElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(SVGSVGElement::new_inherited(local_name, prefix, document)),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -240,12 +240,12 @@ impl VirtualMethods for SVGSVGElement {
                     None,
                     None,
                 );
-                let val = Length::parse_quirky(
+                let val = LengthPercentage::parse_quirky(
                     &context,
                     parser,
                     style::values::specified::AllowQuirks::Always,
                 );
-                AttrValue::Length(value.to_string(), val.ok())
+                AttrValue::LengthPercentage(value.to_string(), val.ok())
             },
             _ => self
                 .super_type()

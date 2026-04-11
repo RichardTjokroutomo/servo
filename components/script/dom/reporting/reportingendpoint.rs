@@ -28,7 +28,6 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::network_listener::{FetchResponseListener, ResourceTimingListener, submit_timing};
-use crate::script_runtime::CanGc;
 
 /// <https://w3c.github.io/reporting/#endpoint>
 #[derive(Clone, Eq, Hash, MallocSizeOf, PartialEq)]
@@ -314,17 +313,21 @@ struct CSPReportEndpointFetchListener {
 impl FetchResponseListener for CSPReportEndpointFetchListener {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         _ = fetch_metadata;
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        chunk: Vec<u8>,
+    ) {
         _ = chunk;
     }
 
@@ -335,7 +338,7 @@ impl FetchResponseListener for CSPReportEndpointFetchListener {
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, _violations: Vec<Violation>) {}

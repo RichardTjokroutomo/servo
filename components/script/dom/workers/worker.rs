@@ -6,8 +6,6 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use base::generic_channel;
-use constellation_traits::{StructuredSerializedData, WorkerScriptLoadOrigin};
 use crossbeam_channel::{Sender, unbounded};
 use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg, WorkerId};
 use dom_struct::dom_struct;
@@ -16,6 +14,8 @@ use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleObject, HandleValue};
 use net_traits::request::Referrer;
+use servo_base::generic_channel;
+use servo_constellation_traits::{StructuredSerializedData, WorkerScriptLoadOrigin};
 use uuid::Uuid;
 
 use crate::dom::abstractworker::{MessageData, SimpleWorkerErrorHandler, WorkerScriptMsg};
@@ -42,6 +42,7 @@ use crate::dom::workerglobalscope::prepare_workerscope_init;
 use crate::realms::enter_auto_realm;
 use crate::script_runtime::{CanGc, ThreadSafeJSContext};
 use crate::task::TaskOnce;
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 pub(crate) type TrustedWorkerAddress = Trusted<Worker>;
 
@@ -161,9 +162,9 @@ impl Worker {
 }
 
 impl WorkerMethods<crate::DomTypeHolder> for Worker {
-    // https://html.spec.whatwg.org/multipage/#dom-worker
+    /// <https://html.spec.whatwg.org/multipage/#dom-worker>
     fn Constructor(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         global: &GlobalScope,
         proto: Option<HandleObject>,
         script_url: TrustedScriptURLOrUSVString,
@@ -178,10 +179,17 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             script_url,
             "Worker constructor",
         )?;
-        // Step 2-4.
-        let worker_url = match global.api_base_url().join(&compliant_script_url.str()) {
-            Ok(url) => url,
-            Err(_) => return Err(Error::Syntax(None)),
+        // Step 2. Let outsideSettings be this's relevant settings object.
+        // Step 3. Let workerURL be the result of encoding-parsing a URL given compliantScriptURL,
+        // relative to outsideSettings.
+        // TODO: Locking the URL should eventually happen inside encoding_parse_a_url, since most callers
+        // will expect their blobs to be kept alive...
+        let Ok(worker_url) = global
+            .encoding_parse_a_url(&compliant_script_url.str())
+            .map(|url| ensure_blob_referenced_by_url_is_kept_alive(global, url))
+        else {
+            // Step 4. If workerURL is failure, then throw a "SyntaxError" DOMException.
+            return Err(Error::Syntax(None));
         };
 
         let (sender, receiver) = unbounded();
@@ -221,12 +229,13 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         let worker_id = WorkerId(Uuid::new_v4());
         if let Some(chan) = global.devtools_chan() {
             let pipeline_id = global.pipeline_id();
-            let title = format!("Worker for {}", worker_url);
+            let title = format!("Worker for {}", worker_url.url());
             if let Some(browsing_context) = browsing_context {
                 let page_info = DevtoolsPageInfo {
                     title,
-                    url: worker_url.clone(),
+                    url: worker_url.url(),
                     is_top_level_global: false,
+                    is_service_worker: false,
                 };
                 let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
                     (browsing_context, pipeline_id, Some(worker_id), webview_id),
@@ -254,8 +263,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             sender,
             receiver,
             worker_load_origin,
-            String::from(worker_options.name.str()),
-            worker_options.type_,
+            worker_options,
             closing.clone(),
             global.image_cache(),
             browsing_context,

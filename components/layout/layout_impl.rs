@@ -12,13 +12,12 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
 use app_units::Au;
-use base::generic_channel::GenericSender;
-use base::id::{PipelineId, WebViewId};
 use bitflags::bitflags;
 use embedder_traits::{Theme, ViewportDetails};
 use euclid::{Point2D, Rect, Scale, Size2D};
 use fonts::{FontContext, FontContextWebFontMethods, WebFontDocumentContext};
 use fonts_traits::StylesheetWebFontLoadFinishedCallback;
+use icu_locid::subtags::Language;
 use layout_api::wrapper_traits::LayoutNode;
 use layout_api::{
     AxesOverflow, BoxAreaType, CSSPixelRectIterator, IFrameSizes, Layout, LayoutConfig,
@@ -41,6 +40,8 @@ use rustc_hash::FxHashMap;
 use script::layout_dom::{ServoLayoutDocument, ServoLayoutElement, ServoLayoutNode};
 use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter, ScriptThreadMessage};
 use servo_arc::Arc as ServoArc;
+use servo_base::generic_channel::GenericSender;
+use servo_base::id::{PipelineId, WebViewId};
 use servo_config::opts::{self, DiagnosticsLogging};
 use servo_config::pref;
 use servo_url::ServoUrl;
@@ -68,7 +69,7 @@ use style::stylist::Stylist;
 use style::traversal::DomTraversal;
 use style::traversal_flags::TraversalFlags;
 use style::values::computed::font::GenericFontFamily;
-use style::values::computed::{CSSPixelLength, FontSize, Length, NonNegativeLength, XLang};
+use style::values::computed::{CSSPixelLength, FontSize, Length, NonNegativeLength};
 use style::values::specified::font::{KeywordInfo, QueryFontMetricsFlags};
 use style::{Zero, driver};
 use style_traits::{CSSPixel, SpeculativePainter};
@@ -728,7 +729,7 @@ impl LayoutThread {
             previously_highlighted_dom_node: Cell::new(None),
             paint_timing_handler: Default::default(),
             user_stylesheets: config.user_stylesheets,
-            accessibility_active: Cell::new(config.accessibility_active),
+            accessibility_active: Cell::new(false),
         }
     }
 
@@ -767,9 +768,11 @@ impl LayoutThread {
         let locked_script_channel = Mutex::new(self.script_chan.clone());
         let pipeline_id = self.id;
         let web_font_finished_loading_callback = move |succeeded: bool| {
-            let _ = locked_script_channel
-                .lock()
-                .send(ScriptThreadMessage::WebFontLoaded(pipeline_id, succeeded));
+            if succeeded {
+                let _ = locked_script_channel
+                    .lock()
+                    .send(ScriptThreadMessage::WebFontLoaded(pipeline_id));
+            }
         };
 
         self.font_context.add_all_web_fonts_from_stylesheet(
@@ -1512,7 +1515,7 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
             .zero_horizontal_advance
             .or_else(|| {
                 font_group
-                    .find_by_codepoint(font_context, '0', None, XLang::get_initial_value())?
+                    .find_by_codepoint(font_context, '0', None, Language::UND)?
                     .metrics
                     .zero_horizontal_advance
             })
@@ -1522,7 +1525,7 @@ impl FontMetricsProvider for LayoutFontMetricsProvider {
             .ic_horizontal_advance
             .or_else(|| {
                 font_group
-                    .find_by_codepoint(font_context, '\u{6C34}', None, XLang::get_initial_value())?
+                    .find_by_codepoint(font_context, '\u{6C34}', None, Language::UND)?
                     .metrics
                     .ic_horizontal_advance
             })

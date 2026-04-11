@@ -5,8 +5,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
-use constellation_traits::{BlobImpl, TransferableOffscreenCanvas};
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
 use js::rust::{HandleObject, HandleValue};
@@ -14,6 +12,8 @@ use pixels::{EncodedImageType, Snapshot};
 use rustc_hash::FxHashMap;
 use script_bindings::match_domstring_ascii;
 use script_bindings::weakref::WeakRef;
+use servo_base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
+use servo_constellation_traits::{BlobImpl, TransferableOffscreenCanvas};
 
 use crate::canvas_context::{CanvasContext, OffscreenRenderingContext};
 use crate::dom::bindings::cell::{DomRefCell, Ref};
@@ -451,16 +451,16 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
                 if snapshot.encode_for_mime_type(&image_type, quality, &mut encoded).is_err() {
                     // Step 7.2.1. If file is null, then reject result with an
                     // "EncodingError" DOMException.
-                    promise.reject_error(Error::Encoding(None), CanGc::note());
+                    promise.reject_error(Error::Encoding(None), CanGc::deprecated_note());
                     return;
                 };
 
                 // Step 7.2.2. Otherwise, resolve result with a new Blob object,
                 // created in global's relevant realm, representing file.
                 let blob_impl = BlobImpl::new_from_bytes(encoded, image_type.as_mime_type());
-                let blob = Blob::new(&this.global(), blob_impl, CanGc::note());
+                let blob = Blob::new(&this.global(), blob_impl, CanGc::deprecated_note());
 
-                promise.resolve_native(&blob, CanGc::note());
+                promise.resolve_native(&blob, CanGc::deprecated_note());
             }));
 
         // Step 8. Return result.

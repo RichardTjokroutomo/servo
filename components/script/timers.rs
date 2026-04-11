@@ -9,7 +9,6 @@ use std::default::Default;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use base::id::PipelineId;
 use deny_public_fields::DenyPublicFields;
 use js::context::JSContext;
 use js::jsapi::Heap;
@@ -17,6 +16,7 @@ use js::jsval::JSVal;
 use js::rust::HandleValue;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use servo_base::id::PipelineId;
 use servo_config::pref;
 use timers::{BoxedTimerCallback, TimerEventRequest};
 
@@ -151,9 +151,7 @@ impl OneshotTimerCallback {
             OneshotTimerCallback::JsTimer(task) => task.invoke(this, js_timers, cx),
             #[cfg(feature = "testbinding")]
             OneshotTimerCallback::TestBindingCallback(callback) => callback.invoke(),
-            OneshotTimerCallback::RefreshRedirectDue(callback) => {
-                callback.invoke(CanGc::from_cx(cx))
-            },
+            OneshotTimerCallback::RefreshRedirectDue(callback) => callback.invoke(cx),
             OneshotTimerCallback::RunStepsAfterTimeout { completion, .. } => {
                 // <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
                 // Step 4.4 Perform completionSteps.
@@ -792,7 +790,7 @@ impl JsTimerTask {
                 // TODO Step 7. Let initiating script be the active script.
 
                 // Step 9.6.5. Let fetch options be the default script fetch options.
-                let fetch_options = ScriptFetchOptions::default_classic_script(&global);
+                let fetch_options = ScriptFetchOptions::default_classic_script();
 
                 // Step 9.6.6. Let base URL be settings object's API base URL.
                 let base_url = global.api_base_url();
@@ -809,6 +807,7 @@ impl JsTimerTask {
                 // Step 9.6.8. Let script be the result of creating a classic script given handler,
                 // settings object, base URL, and fetch options.
                 let script = global.create_a_classic_script(
+                    cx,
                     (*code_str.str()).into(),
                     base_url,
                     fetch_options,
@@ -819,7 +818,7 @@ impl JsTimerTask {
                 );
 
                 // Step 9.6.9. Run the classic script script.
-                _ = global.run_a_classic_script(script, RethrowErrors::No, CanGc::from_cx(cx));
+                _ = global.run_a_classic_script(cx, script, RethrowErrors::No);
             },
             // Step 9.5. If handler is a Function, then invoke handler given arguments and
             // "report", and with callback this value set to thisArg.

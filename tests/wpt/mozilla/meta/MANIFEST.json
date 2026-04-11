@@ -24,6 +24,13 @@
      ]
     ],
     "canvas": {
+     "canvas-edge-cases-crash.html": [
+      "9259aff8d30a319da2632bacb5a912050e9e510e",
+      [
+       null,
+       {}
+      ]
+     ],
      "toblob-then-change-size-crash.html": [
       "355474b4832dde985a73baad925702bbb0cbc73f",
       [
@@ -152,6 +159,35 @@
   },
   "reftest": {
    "appearance": {
+    "input-range.html": [
+     "ed42641aa50cb89647ac3671da73d40b30f55f0d",
+     [
+      "appearance/input-range.html",
+      [
+       [
+        "/_mozilla/appearance/input-range-ref.html",
+        "=="
+       ]
+      ],
+      {
+       "fuzzy": [
+        [
+         null,
+         [
+          [
+           0,
+           6
+          ],
+          [
+           0,
+           20
+          ]
+         ]
+        ]
+       ]
+      }
+     ]
+    ],
     "input-text-caret-mixed-language.html": [
      "d1f45de7548cca878fa90c6a0c67993f75ee5720",
      [
@@ -263,6 +299,19 @@
       [
        [
         "/_mozilla/appearance/input-textual-vertical-align-ref.html",
+        "=="
+       ]
+      ],
+      {}
+     ]
+    ],
+    "marquee.html": [
+     "4a5b8a6d16d85dcf6b74e704c55231dddee26e0b",
+     [
+      null,
+      [
+       [
+        "/_mozilla/appearance/marquee-ref.html",
         "=="
        ]
       ],
@@ -8324,6 +8373,10 @@
     []
    ],
    "appearance": {
+    "input-range-ref.html": [
+     "a805e58f2bf0f48b597a3fef54ac7fa7c50db3b5",
+     []
+    ],
     "input-text-caret-mixed-language-ref.html": [
      "ff0b91f2a8857fdefa4a8a3d7d75e06e53e699cf",
      []
@@ -8358,6 +8411,10 @@
     ],
     "input-textual-vertical-align-ref.html": [
      "ee442170edc3543c2838be3ef4edf78d1aae4753",
+     []
+    ],
+    "marquee-ref.html": [
+     "3bbe99f30eba1dfeda637b2e44e21d366c7fda6f",
      []
     ],
     "supports": {
@@ -10830,7 +10887,13 @@
      "cross-origin-postMessage-child2.html": [
       "a1395ad2b51415b251fb7e27ef6fdfe3d87ae3ef",
       []
-     ]
+     ],
+     "support": {
+      "frame.html": [
+       "3fc532e5a005f3d557e912249f6a74bf6337b6a0",
+       []
+      ]
+     }
     },
     "csp": {
      "support": {
@@ -11139,7 +11202,7 @@
      []
     ],
     "textarea_placeholder_ref.html": [
-     "46d2686144f9bf3b33b4954f3667b06d8f6a6117",
+     "ff3893cde8b7445d8a740568899bda489b7e8815",
      []
     ],
     "timer_eventInvalidation_test.html": [
@@ -12910,7 +12973,7 @@
      ]
     ],
     "css-property-listing.html": [
-     "75f31b3c83bcc08072e207f1b2d5885db7a759ef",
+     "c363eb71b5d8be9fcc3c7cd698638b80339a158f",
      [
       null,
       {}
@@ -13170,6 +13233,24 @@
     ],
     "input-events-textarea-typing.html": [
      "19d8f6be9537f4a286471ddd483a75c01a34e912",
+     [
+      null,
+      {
+       "testdriver": true
+      }
+     ]
+    ],
+    "key-event-text-input-backspace.html": [
+     "fa6c35fd6a0ef966c313a9ef7ac720ea6be27113",
+     [
+      null,
+      {
+       "testdriver": true
+      }
+     ]
+    ],
+    "key-event-text-input-motion.html": [
+     "1e14f2dca3b8e019050396030c7de84bdf06b255",
      [
       null,
       {
@@ -13570,6 +13651,13 @@
      ],
      "cross-origin-postMessage.html": [
       "143240c97aa60b52c8d2e0067c25e4509bf6481d",
+      [
+       null,
+       {}
+      ]
+     ],
+     "security-check.html": [
+      "50da10efe1ab96de8e632093dc7c7885bdedfb0d",
       [
        null,
        {}
@@ -14252,7 +14340,7 @@
      ]
     ],
     "interfaces.https.html": [
-     "355890f678181ca25713ae68d2599d58b0244c39",
+     "24a12c711f475e8e1c4415f963e03e7c8334af01",
      [
       null,
       {}
@@ -14536,6 +14624,13 @@
     ],
     "overload_dict.html": [
      "cd42fd97331753fc0580a47a39814cff57911638",
+     [
+      null,
+      {}
+     ]
+    ],
+    "overload_union.html": [
+     "503e499e110b772251dd8bcc76541d5479d19438",
      [
       null,
       {}
@@ -15145,6 +15240,13 @@
    "shadow-dom": {
     "getrootnode-in-deeply-nested-shadow.html": [
      "355cc270e6020f40176afac26c49a14a59b67169",
+     [
+      null,
+      {}
+     ]
+    ],
+    "set-innerHTML-in-deeply-nested-shadow-tree.html": [
+     "e26bbee95f2cee40f47a640bbd38420332d32f73",
      [
       null,
       {}

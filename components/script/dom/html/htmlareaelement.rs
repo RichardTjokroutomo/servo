@@ -288,17 +288,17 @@ impl HTMLAreaElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLAreaElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLAreaElement::new_inherited(local_name, prefix, document)),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -520,6 +520,12 @@ impl HTMLAreaElementMethods<crate::DomTypeHolder> for HTMLAreaElement {
     fn SetUsername(&self, value: USVString, can_gc: CanGc) {
         self.set_username(value, can_gc);
     }
+
+    // https://html.spec.whatwg.org/multipage/#dom-area-nohref
+    make_bool_getter!(NoHref, "nohref");
+
+    // https://html.spec.whatwg.org/multipage/#dom-area-nohref
+    make_bool_setter!(SetNoHref, "nohref");
 }
 
 impl Activatable for HTMLAreaElement {

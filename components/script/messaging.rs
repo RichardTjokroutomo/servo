@@ -8,11 +8,6 @@ use std::cell::RefCell;
 use std::option::Option;
 use std::result::Result;
 
-use base::generic_channel::{GenericCallback, GenericSender, RoutedReceiver};
-use base::id::{PipelineId, WebViewId};
-#[cfg(feature = "bluetooth")]
-use bluetooth_traits::BluetoothRequest;
-use constellation_traits::ScriptToConstellationMessage;
 use crossbeam_channel::{Receiver, SendError, Sender, select};
 use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg};
 use embedder_traits::{EmbedderControlId, EmbedderControlResponse, ScriptToEmbedderChan};
@@ -22,6 +17,11 @@ use profile_traits::mem::{self as profile_mem, OpaqueSender, ReportsChan};
 use profile_traits::time::{self as profile_time};
 use rustc_hash::FxHashSet;
 use script_traits::{Painter, ScriptThreadMessage};
+use servo_base::generic_channel::{GenericCallback, GenericSender, RoutedReceiver};
+use servo_base::id::{PipelineId, WebViewId};
+#[cfg(feature = "bluetooth")]
+use servo_bluetooth_traits::BluetoothRequest;
+use servo_constellation_traits::ScriptToConstellationMessage;
 use stylo_atoms::Atom;
 use timers::TimerScheduler;
 #[cfg(feature = "webgpu")]
@@ -67,6 +67,7 @@ impl MixedMessage {
                 ScriptThreadMessage::SendInputEvent(_, id, _) => Some(*id),
                 ScriptThreadMessage::RefreshCursor(id, ..) => Some(*id),
                 ScriptThreadMessage::GetTitle(id) => Some(*id),
+                ScriptThreadMessage::GetDocumentOrigin(id, _) => Some(*id),
                 ScriptThreadMessage::SetDocumentActivity(id, ..) => Some(*id),
                 ScriptThreadMessage::SetThrottled(_, id, ..) => Some(*id),
                 ScriptThreadMessage::SetThrottledInContainingIframe(_, id, ..) => Some(*id),
@@ -75,12 +76,13 @@ impl MixedMessage {
                 ScriptThreadMessage::UpdatePipelineId(_, _, _, id, _) => Some(*id),
                 ScriptThreadMessage::UpdateHistoryState(id, ..) => Some(*id),
                 ScriptThreadMessage::RemoveHistoryStates(id, ..) => Some(*id),
-                ScriptThreadMessage::FocusIFrame(id, ..) => Some(*id),
-                ScriptThreadMessage::FocusDocument(id, ..) => Some(*id),
-                ScriptThreadMessage::Unfocus(id, ..) => Some(*id),
+
+                ScriptThreadMessage::FocusDocumentAsPartOfFocusingSteps(id, ..) => Some(*id),
+                ScriptThreadMessage::UnfocusDocumentAsPartOfFocusingSteps(id, ..) => Some(*id),
+                ScriptThreadMessage::FocusDocument(id) => Some(*id),
                 ScriptThreadMessage::WebDriverScriptCommand(id, ..) => Some(*id),
                 ScriptThreadMessage::TickAllAnimations(..) => None,
-                ScriptThreadMessage::WebFontLoaded(id, ..) => Some(*id),
+                ScriptThreadMessage::WebFontLoaded(id) => Some(*id),
                 ScriptThreadMessage::DispatchIFrameLoadEvent {
                     target: _,
                     parent: id,

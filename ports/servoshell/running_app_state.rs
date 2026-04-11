@@ -19,13 +19,13 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use libc::c_char;
 use log::{error, info, warn};
 use servo::{
-    AllowOrDenyRequest, AuthenticationRequest, CSSPixel, ConsoleLogLevel, CreateNewWebViewRequest,
-    DeviceIntPoint, DeviceIntSize, EmbedderControl, EmbedderControlId, EventLoopWaker,
-    GenericSender, InputEvent, InputEventId, InputEventResult, JSValue, LoadStatus,
-    MediaSessionEvent, PermissionRequest, PrefValue, Preferences, ScreenshotCaptureError, Servo,
-    ServoDelegate, ServoError, TraversalId, UserContentManager, WebDriverCommandMsg,
-    WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand, WebDriverSenders, WebView,
-    WebViewDelegate, WebViewId, pref,
+    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
+    ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
+    EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
+    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, PrefValue, Preferences,
+    ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId, UserContentManager,
+    WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand,
+    WebDriverSenders, WebView, WebViewDelegate, WebViewId, pref,
 };
 use url::Url;
 
@@ -140,12 +140,12 @@ impl WebViewCollection {
     }
 
     pub(crate) fn activate_webview_by_index(&mut self, index: usize) {
-        self.activate_webview(
-            *self
-                .creation_order
-                .get(index)
-                .expect("Tried to activate an unknown WebView"),
-        );
+        let Some(webview_id) = self.creation_order.get(index) else {
+            // Just ignore requests to activate uknown WebViews. This can happen by pressing
+            // keyboard shortcuts in the interface.
+            return;
+        };
+        self.activate_webview(*webview_id);
     }
 }
 
@@ -216,6 +216,13 @@ pub(crate) struct RunningAppState {
 
     /// The currently focused [`ServoShellWindow`], if one is focused.
     focused_window: RefCell<Option<Rc<ServoShellWindow>>>,
+
+    /// Whether accessibility is active in servoshell.
+    ///
+    /// Set by the platform via AccessKit, and forwarded to existing and new WebViews via
+    /// [`WebView::set_accessibility_active()`], in [`Self::set_accessibility_active()`] and
+    /// and [`ServoShellWindow::create_toplevel_webview()`].
+    accessibility_active: Cell<bool>,
 }
 
 impl RunningAppState {
@@ -265,6 +272,7 @@ impl RunningAppState {
             exit_scheduled: Default::default(),
             user_content_manager,
             experimental_preferences_enabled,
+            accessibility_active: Cell::new(false),
         }
     }
 
@@ -274,10 +282,10 @@ impl RunningAppState {
         initial_url: Url,
     ) -> Rc<ServoShellWindow> {
         let window = Rc::new(ServoShellWindow::new(platform_window.clone()));
-        window.create_and_activate_toplevel_webview(self.clone(), initial_url);
         self.windows
             .borrow_mut()
             .insert(window.id(), window.clone());
+        window.create_and_activate_toplevel_webview(self.clone(), initial_url);
 
         // If the window already has platform focus, mark it as focused in our application state.
         if platform_window.has_platform_focus() {
@@ -661,6 +669,23 @@ impl RunningAppState {
             });
         }
     }
+
+    pub(crate) fn set_accessibility_active(&self, active: bool) {
+        let was_active = self.accessibility_active.replace(active);
+        if active == was_active {
+            return;
+        }
+
+        for window in self.windows().values() {
+            for (_, webview) in window.webviews() {
+                webview.set_accessibility_active(active);
+            }
+        }
+    }
+
+    pub(crate) fn accessibility_active(&self) -> bool {
+        self.accessibility_active.get()
+    }
 }
 
 impl WebViewDelegate for RunningAppState {
@@ -779,11 +804,10 @@ impl WebViewDelegate for RunningAppState {
     fn show_bluetooth_device_dialog(
         &self,
         webview: WebView,
-        devices: Vec<String>,
-        response_sender: GenericSender<Option<String>>,
+        request: BluetoothDeviceSelectionRequest,
     ) {
         self.platform_window_for_webview_id(webview.id())
-            .show_bluetooth_device_dialog(webview.id(), devices, response_sender);
+            .show_bluetooth_device_dialog(webview.id(), request);
     }
 
     fn request_permission(&self, webview: WebView, permission_request: PermissionRequest) {

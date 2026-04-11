@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use app_units::{Au, MAX_AU};
-use base::id::{BrowsingContextId, PipelineId};
 use data_url::DataUrl;
 use embedder_traits::ViewportDetails;
 use euclid::{Scale, Size2D};
@@ -15,6 +14,7 @@ use net_traits::image_cache::{Image, ImageOrMetadataAvailable, VectorImage};
 use script::layout_dom::ServoThreadSafeLayoutNode;
 use selectors::Element;
 use servo_arc::Arc as ServoArc;
+use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_url::ServoUrl;
 use style::Zero;
 use style::attr::AttrValue;
@@ -22,6 +22,7 @@ use style::computed_values::object_fit::T as ObjectFit;
 use style::logical_geometry::{Direction, WritingMode};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
+use style::rule_tree::RuleCascadeFlags;
 use style::servo::url::ComputedUrl;
 use style::stylesheets::container_rule::ContainerSizeQuery;
 use style::values::CSSFloat;
@@ -244,11 +245,14 @@ impl ReplacedContents {
             context.style_context.quirks_mode(),
             rule_cache_conditions,
             ContainerSizeQuery::none(),
+            RuleCascadeFlags::empty(),
         );
 
         let attr_to_computed = |attr_val: &AttrValue| {
-            if let AttrValue::Length(_, length) = attr_val {
-                length.to_computed_value(&to_computed_context)
+            if let AttrValue::LengthPercentage(_, length_percentage) = attr_val {
+                length_percentage
+                    .to_computed_value(&to_computed_context)?
+                    .to_length()
             } else {
                 None
             }

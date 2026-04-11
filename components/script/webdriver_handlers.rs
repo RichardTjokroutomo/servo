@@ -6,8 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::ptr::NonNull;
 
-use base::generic_channel::{GenericOneshotSender, GenericSend, GenericSender};
-use base::id::{BrowsingContextId, PipelineId};
 use cookie::Cookie;
 use embedder_traits::{
     CustomHandlersAutomationMode, JSValue, JavaScriptEvaluationError,
@@ -16,7 +14,6 @@ use embedder_traits::{
 };
 use euclid::default::{Point2D, Rect, Size2D};
 use hyper_serde::Serde;
-use ipc_channel::ipc::{self};
 use js::context::JSContext;
 use js::conversions::jsstr_to_string;
 use js::jsapi::{
@@ -35,6 +32,8 @@ use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMeth
 use script_bindings::conversions::is_array_like;
 use script_bindings::num::Finite;
 use script_bindings::settings_stack::run_a_script;
+use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
+use servo_base::id::{BrowsingContextId, PipelineId};
 use webdriver::error::ErrorStatus;
 
 use crate::DomTypeHolder;
@@ -80,11 +79,12 @@ use crate::dom::html::htmldatalistelement::HTMLDataListElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::FormControl;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
-use crate::dom::html::htmlinputelement::{HTMLInputElement, InputType};
 use crate::dom::html::htmloptgroupelement::HTMLOptGroupElement;
 use crate::dom::html::htmloptionelement::HTMLOptionElement;
 use crate::dom::html::htmlselectelement::HTMLSelectElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
+use crate::dom::html::input_element::HTMLInputElement;
+use crate::dom::input_element::input_type::InputType;
 use crate::dom::node::{Node, NodeTraits, ShadowIncluding};
 use crate::dom::nodelist::NodeList;
 use crate::dom::types::ShadowRoot;
@@ -334,13 +334,13 @@ fn object_has_to_json_property(
         rooted!(in(*cx) let mut value = UndefinedValue());
         let result = unsafe { JS_GetProperty(*cx, object, name.as_ptr(), value.handle_mut()) };
         if !result {
-            throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::note());
+            throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::deprecated_note());
             false
         } else {
             result && unsafe { JS_TypeOfValue(*cx, value.handle()) } == JSType::JSTYPE_FUNCTION
         }
     } else if unsafe { JS_IsExceptionPending(*cx) } {
-        throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::note());
+        throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::deprecated_note());
         false
     } else {
         false
@@ -475,7 +475,7 @@ fn jsval_to_webdriver_inner(
                     seen,
                 )?)
             } else {
-                throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::note());
+                throw_dom_exception(cx, global_scope, Error::JSFailed, CanGc::deprecated_note());
                 Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
                 ))
@@ -526,7 +526,7 @@ fn clone_an_object(
                 },
             },
             Err(error) => {
-                throw_dom_exception(cx, global_scope, error, CanGc::note());
+                throw_dom_exception(cx, global_scope, error, CanGc::deprecated_note());
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
                 ));
@@ -548,7 +548,7 @@ fn clone_an_object(
                     }
                 },
                 Err(error) => {
-                    throw_dom_exception(cx, global_scope, error, CanGc::note());
+                    throw_dom_exception(cx, global_scope, error, CanGc::deprecated_note());
                     return Err(JavaScriptEvaluationError::SerializationError(
                         JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
                     ));
@@ -1266,7 +1266,8 @@ pub(crate) fn handle_will_send_keys(
 
     // Step 6: Let file be true if element is input element
     // in the file upload state, or false otherwise
-    let is_file_input = input_element.is_some_and(|e| e.input_type() == InputType::File);
+    let is_file_input =
+        input_element.is_some_and(|e| matches!(*e.input_type(), InputType::File(_)));
 
     // Step 7. If file is false or the session's strict file interactability
     if !is_file_input || strict_file_interactability {
@@ -1360,16 +1361,19 @@ pub(crate) fn handle_get_computed_role(
     reply
         .send(
             get_known_element(documents, pipeline, node_id)
+                // FIXME: Actually compute the role instead of using WAI-ARIA role.
+                // <https://github.com/servo/servo/issues/43734>
+                // The logic can then be shared with devtools accessibility inspector.
                 .map(|element| element.GetRole().map(String::from)),
         )
         .unwrap();
 }
 
 pub(crate) fn handle_get_page_source(
+    cx: &mut js::context::JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     reply: GenericSender<Result<String, ErrorStatus>>,
-    can_gc: CanGc,
 ) {
     reply
         .send(
@@ -1377,10 +1381,10 @@ pub(crate) fn handle_get_page_source(
                 .find_document(pipeline)
                 .ok_or(ErrorStatus::UnknownError)
                 .and_then(|document| match document.GetDocumentElement() {
-                    Some(element) => match element.outer_html(can_gc) {
+                    Some(element) => match element.outer_html(cx) {
                         Ok(source) => Ok(source.to_string()),
                         Err(_) => {
-                            match XMLSerializer::new(document.window(), None, can_gc)
+                            match XMLSerializer::new(document.window(), None, CanGc::from_cx(cx))
                                 .SerializeToString(element.upcast::<Node>())
                             {
                                 Ok(source) => Ok(source.to_string()),
@@ -1405,7 +1409,7 @@ pub(crate) fn handle_get_cookies(
             match documents.find_document(pipeline) {
                 Some(document) => {
                     let url = document.url();
-                    let (sender, receiver) = ipc::channel().unwrap();
+                    let (sender, receiver) = generic_channel::channel().unwrap();
                     let _ = document
                         .window()
                         .as_global_scope()
@@ -1432,7 +1436,7 @@ pub(crate) fn handle_get_cookie(
             match documents.find_document(pipeline) {
                 Some(document) => {
                     let url = document.url();
-                    let (sender, receiver) = ipc::channel().unwrap();
+                    let (sender, receiver) = generic_channel::channel().unwrap();
                     let _ = document
                         .window()
                         .as_global_scope()
@@ -1461,7 +1465,7 @@ pub(crate) fn handle_add_cookie(
     let document = match documents.find_document(pipeline) {
         Some(document) => document,
         None => {
-            return reply.send(Err(ErrorStatus::UnableToSetCookie)).unwrap();
+            return reply.send(Err(ErrorStatus::NoSuchWindow)).unwrap();
         },
     };
     let url = document.url();
@@ -1472,26 +1476,31 @@ pub(crate) fn handle_add_cookie(
     };
 
     let domain = cookie.domain().map(ToOwned::to_owned);
+    // Step 6.
     reply
         .send(match (document.is_cookie_averse(), domain) {
+            // If session's current browsing context's document element is a
+            // cookie-averse Document object, return error with error code invalid cookie domain.
             (true, _) => Err(ErrorStatus::InvalidCookieDomain),
             (false, Some(ref domain)) if url.host_str().is_some_and(|host| host == domain) => {
                 let _ = document
                     .window()
                     .as_global_scope()
                     .resource_threads()
-                    .send(SetCookieForUrl(url, Serde(cookie), method));
+                    .send(SetCookieForUrl(url, Serde(cookie), method, None));
                 Ok(())
             },
+            // If cookie domain is not equal to session's current browsing context's
+            // active document's domain, return error with error code invalid cookie domain.
+            (false, Some(_)) => Err(ErrorStatus::InvalidCookieDomain),
             (false, None) => {
                 let _ = document
                     .window()
                     .as_global_scope()
                     .resource_threads()
-                    .send(SetCookieForUrl(url, Serde(cookie), method));
+                    .send(SetCookieForUrl(url, Serde(cookie), method, None));
                 Ok(())
             },
-            (_, _) => Err(ErrorStatus::UnableToSetCookie),
         })
         .unwrap();
 }
@@ -1785,22 +1794,22 @@ fn element_is_mutable_form_control(element: &Element) -> bool {
     if let Some(input_element) = element.downcast::<HTMLInputElement>() {
         input_element.is_mutable() &&
             matches!(
-                input_element.input_type(),
-                InputType::Text |
-                    InputType::Search |
-                    InputType::Url |
-                    InputType::Tel |
-                    InputType::Email |
-                    InputType::Password |
-                    InputType::Date |
-                    InputType::Month |
-                    InputType::Week |
-                    InputType::Time |
-                    InputType::DatetimeLocal |
-                    InputType::Number |
-                    InputType::Range |
-                    InputType::Color |
-                    InputType::File
+                *input_element.input_type(),
+                InputType::Text(_) |
+                    InputType::Search(_) |
+                    InputType::Url(_) |
+                    InputType::Tel(_) |
+                    InputType::Email(_) |
+                    InputType::Password(_) |
+                    InputType::Date(_) |
+                    InputType::Month(_) |
+                    InputType::Week(_) |
+                    InputType::Time(_) |
+                    InputType::DatetimeLocal(_) |
+                    InputType::Number(_) |
+                    InputType::Range(_) |
+                    InputType::Color(_) |
+                    InputType::File(_)
             )
     } else if let Some(textarea_element) = element.downcast::<HTMLTextAreaElement>() {
         textarea_element.is_mutable()
@@ -1953,7 +1962,7 @@ pub(crate) fn handle_element_click(
                 // Step 4. If the element is an input element in the file upload state
                 // return error with error code invalid argument.
                 if let Some(input_element) = element.downcast::<HTMLInputElement>() {
-                    if input_element.input_type() == InputType::File {
+                    if matches!(*input_element.input_type(), InputType::File(_)) {
                         return Err(ErrorStatus::InvalidArgument);
                     }
                 }

@@ -6,6 +6,8 @@ license.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
 
 [lib]
 name = "paint"
@@ -22,10 +24,7 @@ unwrap_used = "deny"
 panic = "deny"
 
 [dependencies]
-base = { workspace = true }
 bitflags = { workspace = true }
-canvas_traits = { workspace = true }
-constellation_traits = { workspace = true }
 crossbeam-channel = { workspace = true }
 dpi = { workspace = true }
 embedder_traits = { workspace = true }
@@ -34,16 +33,19 @@ gleam = { workspace = true }
 image = { workspace = true }
 ipc-channel = { workspace = true }
 log = { workspace = true }
-media = { workspace = true }
 malloc_size_of = { workspace = true }
+media = { workspace = true }
 paint_api = { workspace = true }
 profile_traits = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
+servo-allocator = { workspace = true }
+servo-base = { workspace = true }
+servo-canvas-traits = { workspace = true }
+servo-config = { workspace = true }
+servo-constellation-traits = { workspace = true }
+servo-geometry = { workspace = true }
 servo-tracing = { workspace = true }
-servo_allocator = { workspace = true }
-servo_config = { workspace = true }
-servo_geometry = { workspace = true }
 smallvec = { workspace = true }
 stylo_traits = { workspace = true }
 surfman = { workspace = true }

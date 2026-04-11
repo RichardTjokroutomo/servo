@@ -6,16 +6,17 @@ license.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
 
 [lib]
-name = "canvas_traits"
+name = "servo_canvas_traits"
 path = "lib.rs"
 
 [features]
 webgl_backtrace = []
 
 [dependencies]
-base = { workspace = true }
 crossbeam-channel = { workspace = true }
 euclid = { workspace = true }
 fonts_traits = { workspace = true }
@@ -25,6 +26,7 @@ malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
 pixels = { workspace = true }
 serde = { workspace = true }
+servo-base = { workspace = true }
 strum = { workspace = true }
 stylo = { workspace = true }
 webrender_api = { workspace = true }

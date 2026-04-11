@@ -179,11 +179,6 @@ impl ShadowRoot {
         &self.document
     }
 
-    pub(crate) fn get_focused_element(&self) -> Option<DomRoot<Element>> {
-        // XXX get retargeted focused element
-        None
-    }
-
     pub(crate) fn stylesheet_count(&self) -> usize {
         self.author_styles.borrow().stylesheets.len()
     }
@@ -387,8 +382,7 @@ impl ShadowRoot {
 impl ShadowRootMethods<crate::DomTypeHolder> for ShadowRoot {
     /// <https://html.spec.whatwg.org/multipage/#dom-document-activeelement>
     fn GetActiveElement(&self) -> Option<DomRoot<Element>> {
-        self.document_or_shadow_root
-            .get_active_element(self.get_focused_element(), None, None)
+        self.document_or_shadow_root.active_element(self.upcast())
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>
@@ -460,29 +454,32 @@ impl ShadowRootMethods<crate::DomTypeHolder> for ShadowRoot {
             StyleSheetList::new(
                 &self.window,
                 StyleSheetListOwner::ShadowRoot(Dom::from_ref(self)),
-                CanGc::note(),
+                CanGc::deprecated_note(),
             )
         })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-shadowroot-gethtml>
-    fn GetHTML(&self, options: &GetHTMLOptions, can_gc: CanGc) -> DOMString {
+    fn GetHTML(&self, cx: &mut js::context::JSContext, options: &GetHTMLOptions) -> DOMString {
         // > ShadowRoot's getHTML(options) method steps are to return the result of HTML fragment serialization
         // >  algorithm with this, options["serializableShadowRoots"], and options["shadowRoots"].
         self.upcast::<Node>().html_serialize(
+            cx,
             TraversalScope::ChildrenOnly(None),
             options.serializableShadowRoots,
             options.shadowRoots.clone(),
-            can_gc,
         )
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-shadowroot-innerhtml>
-    fn GetInnerHTML(&self, can_gc: CanGc) -> Fallible<TrustedHTMLOrNullIsEmptyString> {
+    fn GetInnerHTML(
+        &self,
+        cx: &mut js::context::JSContext,
+    ) -> Fallible<TrustedHTMLOrNullIsEmptyString> {
         // ShadowRoot's innerHTML getter steps are to return the result of running fragment serializing
         // algorithm steps with this and true.
         self.upcast::<Node>()
-            .fragment_serialization_algorithm(true, can_gc)
+            .fragment_serialization_algorithm(cx, true)
             .map(TrustedHTMLOrNullIsEmptyString::NullIsEmptyString)
     }
 
@@ -617,15 +614,15 @@ impl VirtualMethods for ShadowRoot {
 
         shadow_root.set_flag(NodeFlags::IS_CONNECTED, context.tree_connected);
 
-        let context = BindContext::new(shadow_root, IsShadowTree::Yes);
+        let inner_context = BindContext::new(shadow_root, IsShadowTree::Yes);
 
         // avoid iterate over the shadow root itself
-        for node in shadow_root.traverse_preorder(ShadowIncluding::Yes).skip(1) {
-            node.set_flag(NodeFlags::IS_CONNECTED, context.tree_connected);
+        for node in shadow_root.traverse_preorder(ShadowIncluding::No).skip(1) {
+            node.set_flag(NodeFlags::IS_CONNECTED, inner_context.tree_connected);
 
             // Out-of-document elements never have the descendants flag set
             debug_assert!(!node.get_flag(NodeFlags::HAS_DIRTY_DESCENDANTS));
-            vtable_for(&node).bind_to_tree(cx, &context);
+            vtable_for(&node).bind_to_tree(cx, &inner_context);
         }
     }
 

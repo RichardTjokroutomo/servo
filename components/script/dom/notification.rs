@@ -427,11 +427,11 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
                 // Step 3.2.1: If deprecatedCallback is given,
                 //             then invoke deprecatedCallback with « permissionState » and "report".
                 if let Some(callback) = global.remove_notification_permission_request_callback(uuid_) {
-                    let _ = callback.Call__(notification_permission, ExceptionHandling::Report, CanGc::note());
+                    let _ = callback.Call__(notification_permission, ExceptionHandling::Report, CanGc::deprecated_note());
                 }
 
                 // Step 3.2.2: Resolve promise with permissionState.
-                promise.resolve_native(&notification_permission, CanGc::note());
+                promise.resolve_native(&notification_permission, CanGc::deprecated_note());
             }),
         );
 
@@ -754,10 +754,10 @@ struct ResourceFetchListener {
 
 impl FetchResponseListener for ResourceFetchListener {
     fn process_request_body(&mut self, _: RequestId) {}
-    fn process_request_eof(&mut self, _: RequestId) {}
 
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -792,7 +792,12 @@ impl FetchResponseListener for ResourceFetchListener {
         };
     }
 
-    fn process_response_chunk(&mut self, request_id: RequestId, payload: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        request_id: RequestId,
+        payload: Vec<u8>,
+    ) {
         if self.status.is_ok() {
             self.image_cache.notify_pending_response(
                 self.pending_image_id,
@@ -812,7 +817,7 @@ impl FetchResponseListener for ResourceFetchListener {
             self.pending_image_id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        network_listener::submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
@@ -889,7 +894,7 @@ impl Notification {
         let request_id = request.id;
 
         let cache_result = global.image_cache().get_cached_image_status(
-            request.url.clone(),
+            request.url.url(),
             global.origin().immutable().clone(),
             None, // TODO: check which CORS should be used
         );
@@ -1016,7 +1021,7 @@ impl Notification {
             pending_image_id,
             image_cache: global.image_cache(),
             notification: Trusted::new(self),
-            url: request.url.clone(),
+            url: request.url.url(),
             status: Ok(()),
         };
 

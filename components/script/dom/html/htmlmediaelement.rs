@@ -9,8 +9,6 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use std::{f64, mem};
 
-use base::generic_channel::GenericSharedMemory;
-use base::id::WebViewId;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use dom_struct::dom_struct;
 use embedder_traits::{MediaPositionState, MediaSessionEvent, MediaSessionPlaybackState};
@@ -35,8 +33,9 @@ use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, HTMLMediaElementTypeId, NodeTypeId,
 };
 use script_bindings::root::assert_in_script;
-use script_bindings::script_runtime::temp_cx;
 use script_bindings::weakref::WeakRef;
+use servo_base::generic_channel::GenericSharedMemory;
+use servo_base::id::WebViewId;
 use servo_config::pref;
 use servo_media::player::audio::AudioRenderer;
 use servo_media::player::video::{VideoFrame, VideoFrameRenderer};
@@ -116,6 +115,11 @@ static MEDIA_CONTROL_CSS: &str = include_str!("../../resources/media-controls.cs
 
 /// A JS file to control the media controls.
 static MEDIA_CONTROL_JS: &str = include_str!("../../resources/media-controls.js");
+
+/// The media engine may report a seek-done position that differs slightly from the
+/// requested position (e.g. snapping to the nearest keyframe), so we use a threshold
+/// instead of strict equality. (Unit is second)
+const SEEK_POSITION_THRESHOLD: f64 = 0.5;
 
 #[derive(MallocSizeOf, PartialEq)]
 enum FrameStatus {
@@ -872,10 +876,10 @@ impl HTMLMediaElement {
 
                     this.fulfill_in_flight_play_promises(|| {
                         // Step 2.3.1. Fire an event named timeupdate at the element.
-                        this.upcast::<EventTarget>().fire_event(atom!("timeupdate"), CanGc::note());
+                        this.upcast::<EventTarget>().fire_event(atom!("timeupdate"), CanGc::deprecated_note());
 
                         // Step 2.3.2. Fire an event named pause at the element.
-                        this.upcast::<EventTarget>().fire_event(atom!("pause"), CanGc::note());
+                        this.upcast::<EventTarget>().fire_event(atom!("pause"), CanGc::deprecated_note());
 
                         // Step 2.3.3. Reject pending play promises with promises and an
                         // "AbortError" DOMException.
@@ -916,7 +920,7 @@ impl HTMLMediaElement {
 
                 this.fulfill_in_flight_play_promises(|| {
                     // Step 2.1. Fire an event named playing at the element.
-                    this.upcast::<EventTarget>().fire_event(atom!("playing"), CanGc::note());
+                    this.upcast::<EventTarget>().fire_event(atom!("playing"), CanGc::deprecated_note());
 
                     // Step 2.2. Resolve pending play promises with promises.
                     // Done after running this closure in `fulfill_in_flight_play_promises`.
@@ -1854,8 +1858,8 @@ impl HTMLMediaElement {
         f();
         for promise in &*promises {
             match result {
-                Ok(ref value) => promise.resolve_native(value, CanGc::note()),
-                Err(ref error) => promise.reject_error(error.clone(), CanGc::note()),
+                Ok(ref value) => promise.resolve_native(value, CanGc::deprecated_note()),
+                Err(ref error) => promise.reject_error(error.clone(), CanGc::deprecated_note()),
             }
         }
     }
@@ -2296,7 +2300,7 @@ impl HTMLMediaElement {
                 }
 
                 // Step 3.1. Fire an event named timeupdate at the media element.
-                this.upcast::<EventTarget>().fire_event(atom!("timeupdate"), CanGc::note());
+                this.upcast::<EventTarget>().fire_event(atom!("timeupdate"), CanGc::deprecated_note());
 
                 // Step 3.2. If the media element has ended playback, the direction of playback is
                 // forwards, and paused is false, then:
@@ -2307,7 +2311,7 @@ impl HTMLMediaElement {
                     this.paused.set(true);
 
                     // Step 3.2.2. Fire an event named pause at the media element.
-                    this.upcast::<EventTarget>().fire_event(atom!("pause"), CanGc::note());
+                    this.upcast::<EventTarget>().fire_event(atom!("pause"), CanGc::deprecated_note());
 
                     // Step 3.2.3. Take pending play promises and reject pending play promises with
                     // the result and an "AbortError" DOMException.
@@ -2316,7 +2320,7 @@ impl HTMLMediaElement {
                 }
 
                 // Step 3.3. Fire an event named ended at the media element.
-                this.upcast::<EventTarget>().fire_event(atom!("ended"), CanGc::note());
+                this.upcast::<EventTarget>().fire_event(atom!("ended"), CanGc::deprecated_note());
             }));
 
         // <https://html.spec.whatwg.org/multipage/#dom-media-have_current_data>
@@ -2738,7 +2742,8 @@ impl HTMLMediaElement {
     fn playback_seek_done(&self, position: f64) {
         // If the seek was initiated by script or by the user agent itself continue with the
         // following steps, otherwise abort.
-        if !self.seeking.get() || position != self.current_seek_position.get() {
+        let delta = (position - self.current_seek_position.get()).abs();
+        if !self.seeking.get() || delta > SEEK_POSITION_THRESHOLD {
             return;
         }
 
@@ -3711,13 +3716,12 @@ struct HTMLMediaElementFetchListener {
 impl FetchResponseListener for HTMLMediaElementFetchListener {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
-    #[expect(unsafe_code)]
-    fn process_response(&mut self, _: RequestId, metadata: Result<FetchMetadata, NetworkError>) {
-        // TODO: https://github.com/servo/servo/issues/42840
-        let mut cx = unsafe { temp_cx() };
-        let cx = &mut cx;
+    fn process_response(
+        &mut self,
+        cx: &mut js::context::JSContext,
+        _: RequestId,
+        metadata: Result<FetchMetadata, NetworkError>,
+    ) {
         let element = self.element.root();
 
         let (metadata, origin_clean) = match metadata {
@@ -3795,7 +3799,12 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
         }
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        chunk: Vec<u8>,
+    ) {
         let element = self.element.root();
 
         self.fetched_content_length += chunk.len() as u64;
@@ -3915,7 +3924,7 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
             element.media_data_processing_failure_steps();
         }
 
-        network_listener::submit_timing(&self, &status, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &status, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {

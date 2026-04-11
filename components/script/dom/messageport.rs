@@ -6,8 +6,6 @@ use std::cell::{Cell, RefCell};
 use std::ptr;
 use std::rc::Rc;
 
-use base::id::{MessagePortId, MessagePortIndex};
-use constellation_traits::{MessagePortImpl, PortMessageTask};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JS_NewObject, JSObject};
@@ -15,6 +13,8 @@ use js::jsval::UndefinedValue;
 use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
 use rustc_hash::FxHashMap;
 use script_bindings::conversions::SafeToJSValConvertible;
+use servo_base::id::{MessagePortId, MessagePortIndex};
+use servo_constellation_traits::{MessagePortImpl, PortMessageTask};
 
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
 use crate::dom::bindings::codegen::Bindings::MessagePortBinding::{
@@ -333,12 +333,11 @@ impl MessagePortMethods<crate::DomTypeHolder> for MessagePort {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-start>
-    fn Start(&self, can_gc: CanGc) {
+    fn Start(&self, cx: &mut JSContext) {
         if self.detached.get() {
             return;
         }
-        self.global()
-            .start_message_port(self.message_port_id(), can_gc);
+        self.global().start_message_port(cx, self.message_port_id());
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-close>
@@ -363,14 +362,13 @@ impl MessagePortMethods<crate::DomTypeHolder> for MessagePort {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#handler-messageport-onmessage>
-    fn SetOnmessage(&self, listener: Option<Rc<EventHandlerNonNull>>, can_gc: CanGc) {
+    fn SetOnmessage(&self, cx: &mut JSContext, listener: Option<Rc<EventHandlerNonNull>>) {
         if self.detached.get() {
             return;
         }
         self.set_onmessage(listener);
         // Note: we cannot use the event_handler macro, due to the need to start the port.
-        self.global()
-            .start_message_port(self.message_port_id(), can_gc);
+        self.global().start_message_port(cx, self.message_port_id());
     }
 
     // <https://html.spec.whatwg.org/multipage/#handler-messageport-onmessageerror>

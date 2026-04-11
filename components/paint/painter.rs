@@ -7,11 +7,6 @@ use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use base::Epoch;
-use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::{GenericReceiver, GenericSharedMemory};
-use base::id::{PainterId, PipelineId, WebViewId};
-use constellation_traits::{EmbedderToConstellationMessage, PaintMetricEvent};
 use crossbeam_channel::Sender;
 use dpi::PhysicalSize;
 use embedder_traits::{
@@ -34,7 +29,12 @@ use paint_api::{
 use profile_traits::time::{ProfilerCategory, ProfilerChan};
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
+use servo_base::Epoch;
+use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::generic_channel::{GenericReceiver, GenericSharedMemory};
+use servo_base::id::{PainterId, PipelineId, WebViewId};
 use servo_config::{opts, pref};
+use servo_constellation_traits::{EmbedderToConstellationMessage, PaintMetricEvent};
 use servo_geometry::DeviceIndependentPixel;
 use smallvec::SmallVec;
 use style_traits::CSSPixel;
@@ -238,6 +238,7 @@ impl Painter {
                 enable_aa: pref!(gfx_text_antialiasing_enabled),
                 enable_subpixel_aa: pref!(gfx_subpixel_text_antialiasing_enabled),
                 allow_texture_swizzling: pref!(gfx_texture_swizzling_enabled),
+                enable_dithering: true,
                 clear_color,
                 upload_method,
                 workers,
@@ -965,7 +966,7 @@ impl Painter {
             },
             display_list_descriptor,
         );
-        let _span = profile_traits::trace_span!("PaintMessage::SendDisplayList",).entered();
+        let _span = profile_traits::trace_span!("PaintMessage::SendDisplayList").entered();
         let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
             return warn!("Could not find WebView for incoming display list");
         };
@@ -979,13 +980,16 @@ impl Painter {
 
         let epoch = display_list_info.epoch.into();
         let first_reflow = display_list_info.first_reflow;
-        if details.first_paint_metric.get() == PaintMetricState::Waiting {
+        if details.first_paint_metric.get() == PaintMetricState::Waiting &&
+            display_list_info.is_paintable
+        {
             details
                 .first_paint_metric
                 .set(PaintMetricState::Seen(epoch, first_reflow));
         }
 
         if details.first_contentful_paint_metric.get() == PaintMetricState::Waiting &&
+            display_list_info.is_paintable &&
             display_list_info.is_contentful
         {
             details
@@ -1302,29 +1306,35 @@ impl Painter {
             .unwrap_or(1.)
     }
 
-    pub(crate) fn notify_input_event(&mut self, webview_id: WebViewId, event: InputEventAndId) {
-        if let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) {
-            match &event.event {
-                InputEvent::MouseMove(event) => {
-                    // We only track the last mouse move position for non-touch events.
-                    if !event.is_compatibility_event_for_touch {
-                        let event_point = event
-                            .point
-                            .as_device_point(webview_renderer.device_pixels_per_page_pixel());
-                        self.last_mouse_move_position = Some(event_point);
-                    }
-                },
-                InputEvent::MouseLeftViewport(_) => {
-                    self.last_mouse_move_position = None;
-                },
-                _ => {
-                    // Disable LCP calculation on any other input event except mouse moves.
-                    self.lcp_calculator.disable_for_webview(webview_id);
-                },
-            }
+    pub(crate) fn notify_input_event(
+        &mut self,
+        webview_id: WebViewId,
+        event: InputEventAndId,
+    ) -> bool {
+        self.webview_renderers
+            .get_mut(&webview_id)
+            .is_some_and(|webview_renderer| {
+                match &event.event {
+                    InputEvent::MouseMove(event) => {
+                        // We only track the last mouse move position for non-touch events.
+                        if !event.is_compatibility_event_for_touch {
+                            let event_point = event
+                                .point
+                                .as_device_point(webview_renderer.device_pixels_per_page_pixel());
+                            self.last_mouse_move_position = Some(event_point);
+                        }
+                    },
+                    InputEvent::MouseLeftViewport(_) => {
+                        self.last_mouse_move_position = None;
+                    },
+                    _ => {
+                        // Disable LCP calculation on any other input event except mouse moves.
+                        self.lcp_calculator.disable_for_webview(webview_id);
+                    },
+                }
 
-            webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event);
-        }
+                webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event)
+            })
     }
 
     pub(crate) fn notify_scroll_event(

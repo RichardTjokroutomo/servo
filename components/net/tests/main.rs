@@ -39,6 +39,7 @@ use net::test::HttpState;
 use net::test_util::{
     create_generic_embedder_proxy, make_body, make_server, make_ssl_server, replace_host_table,
 };
+use net_traits::blob_url_store::BlobTokenCommunicator;
 use net_traits::filemanager_thread::FileTokenCheck;
 use net_traits::request::Request;
 use net_traits::response::Response;
@@ -135,7 +136,7 @@ fn new_fetch_context(
         state: Arc::new(create_http_state(Some(sender.clone()))),
         user_agent: DEFAULT_USER_AGENT.into(),
         devtools_chan,
-        filemanager: FileManager::new(sender.clone()),
+        filemanager: FileManager::new(sender.clone(), BlobTokenCommunicator::stub_for_testing()),
         file_token: FileTokenCheck::NotRequired,
         request_interceptor: Arc::new(TokioMutex::new(RequestInterceptor::new(sender))),
         cancellation_listener: Arc::new(Default::default()),
@@ -152,7 +153,6 @@ fn new_fetch_context(
 }
 impl FetchTaskTarget for FetchResponseCollector {
     fn process_request_body(&mut self, _: &Request) {}
-    fn process_request_eof(&mut self, _: &Request) {}
     fn process_response(&mut self, _: &Request, _: &Response) {}
     fn process_response_chunk(&mut self, _: &Request, _: Vec<u8>) {}
     /// Fired when the response is fully fetched

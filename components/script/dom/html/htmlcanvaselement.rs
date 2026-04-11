@@ -5,22 +5,20 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use base::Epoch;
-use canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
-use constellation_traits::BlobImpl;
-#[cfg(feature = "webgpu")]
-use constellation_traits::ScriptToConstellationMessage;
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
 use html5ever::{LocalName, Prefix, local_name, ns};
-#[cfg(feature = "webgpu")]
-use ipc_channel::ipc::{self as ipcchan};
 use js::error::throw_type_error;
 use js::rust::{HandleObject, HandleValue};
 use layout_api::HTMLCanvasData;
 use pixels::{EncodedImageType, Snapshot};
 use rustc_hash::FxHashMap;
 use script_bindings::weakref::WeakRef;
+use servo_base::Epoch;
+use servo_canvas_traits::webgl::{GLContextAttributes, WebGLVersion};
+use servo_constellation_traits::BlobImpl;
+#[cfg(feature = "webgpu")]
+use servo_constellation_traits::ScriptToConstellationMessage;
 use servo_media::streams::MediaStreamType;
 use servo_media::streams::registry::MediaStreamId;
 use style::attr::AttrValue;
@@ -106,19 +104,19 @@ impl HTMLCanvasElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLCanvasElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLCanvasElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -322,13 +320,15 @@ impl HTMLCanvasElement {
 
     #[cfg(feature = "webgpu")]
     fn get_or_init_webgpu_context(&self, can_gc: CanGc) -> Option<DomRoot<GPUCanvasContext>> {
+        use servo_base::generic_channel;
+
         if let Some(ctx) = self.context() {
             return match *ctx {
                 RenderingContext::WebGPU(ref ctx) => Some(DomRoot::from_ref(ctx)),
                 _ => None,
             };
         }
-        let (sender, receiver) = ipcchan::channel().unwrap();
+        let (sender, receiver) = generic_channel::channel().unwrap();
         let global_scope = self.owner_global();
         let _ = global_scope
             .script_to_constellation_chan()
@@ -594,7 +594,7 @@ impl HTMLCanvasElementMethods<crate::DomTypeHolder> for HTMLCanvasElement {
                 };
 
                 let Some(mut snapshot) = result else {
-                    let _ = callback.Call__(None, ExceptionHandling::Report, CanGc::note());
+                    let _ = callback.Call__(None, ExceptionHandling::Report, CanGc::deprecated_note());
                     return;
                 };
 
@@ -611,14 +611,14 @@ impl HTMLCanvasElementMethods<crate::DomTypeHolder> for HTMLCanvasElement {
                        // object, created in the relevant realm of this canvas element,
                        // representing result. [FILEAPI]
                        blob_impl = BlobImpl::new_from_bytes(encoded, image_type.as_mime_type());
-                       blob = Blob::new(&this.global(), blob_impl, CanGc::note());
+                       blob = Blob::new(&this.global(), blob_impl, CanGc::deprecated_note());
                        Some(&*blob)
                    }
                    Err(..) => None,
                 };
 
                 // Step 4.2.2: Invoke callback with « result » and "report".
-                let _ = callback.Call__(result, ExceptionHandling::Report, CanGc::note());
+                let _ = callback.Call__(result, ExceptionHandling::Report, CanGc::deprecated_note());
             }));
 
         Ok(())

@@ -2,16 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use base::generic_channel::GenericSend;
 use dom_struct::dom_struct;
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::conversions::SafeToJSValConvertible;
+use servo_base::generic_channel::GenericSend;
 use storage_traits::indexeddb::{BackendResult, IndexedDBThreadMsg, SyncOperation};
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
+use crate::dom::bindings::codegen::Bindings::IDBDatabaseBinding::IDBTransactionDurability;
 use crate::dom::bindings::codegen::Bindings::IDBOpenDBRequestBinding::IDBOpenDBRequestMethods;
 use crate::dom::bindings::codegen::Bindings::IDBTransactionBinding::IDBTransactionMode;
 use crate::dom::bindings::error::{Error, ErrorToJsval};
@@ -160,6 +161,7 @@ impl IDBOpenDBRequest {
             &global,
             connection,
             IDBTransactionMode::Versionchange,
+            IDBTransactionDurability::Default,
             &connection.object_stores(),
             transaction,
             can_gc,
@@ -225,7 +227,7 @@ impl IDBOpenDBRequest {
         let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
             let response_listener = response_listener.clone();
             task_source.queue(task!(request_callback: move || {
-                response_listener.handle_delete_db(message.unwrap(), CanGc::note());
+                response_listener.handle_delete_db(message.unwrap(), CanGc::deprecated_note());
             }))
         })
         .expect("Could not create delete database callback");
@@ -282,7 +284,7 @@ impl IDBOpenDBRequest {
 
         let _ac = enter_realm(&*result);
         rooted!(in(*cx) let mut result_val = UndefinedValue());
-        result.safe_to_jsval(cx, result_val.handle_mut(), CanGc::note());
+        result.safe_to_jsval(cx, result_val.handle_mut(), CanGc::deprecated_note());
         self.set_result(result_val.handle());
 
         let event = Event::new(
@@ -290,9 +292,9 @@ impl IDBOpenDBRequest {
             Atom::from("success"),
             EventBubbles::DoesNotBubble,
             EventCancelable::NotCancelable,
-            CanGc::note(),
+            CanGc::deprecated_note(),
         );
-        event.fire(self.upcast(), CanGc::note());
+        event.fire(self.upcast(), CanGc::deprecated_note());
     }
 
     /// <https://w3c.github.io/IndexedDB/#eventdef-idbopendbrequest-blocked>

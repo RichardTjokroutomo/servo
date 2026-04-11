@@ -59,7 +59,6 @@ allow = [
     "ISC",
     "MIT",
     "MPL-2.0",
-    "OpenSSL",
     "OFL-1.1",
     "Ubuntu-font-1.0",
     "Unicode-3.0",
@@ -108,6 +107,9 @@ skip = [
     # New versions of these dependencies is pulled in by GStreamer / GLib.
     "itertools",
 
+    # btleplug requires 0.19
+    "jni",
+
     # Duplicated by egui
     "foldhash",
     "windows-collections",
@@ -133,9 +135,6 @@ skip = [
     "windows_x86_64_gnu",
     "windows_x86_64_gnullvm",
     "windows_x86_64_msvc",
-
-    # Duplicated by zbus.
-    "windows_i686_gnullvm",
 
     # wgpu has the latest and greatest.
     "windows-core",

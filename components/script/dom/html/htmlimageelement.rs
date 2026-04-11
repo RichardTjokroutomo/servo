@@ -250,10 +250,10 @@ impl FetchResponseListener for ImageContext {
     }
 
     fn process_request_body(&mut self, _: RequestId) {}
-    fn process_request_eof(&mut self, _: RequestId) {}
 
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -299,7 +299,12 @@ impl FetchResponseListener for ImageContext {
         };
     }
 
-    fn process_response_chunk(&mut self, request_id: RequestId, payload: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        request_id: RequestId,
+        payload: Vec<u8>,
+    ) {
         if self.status.is_ok() {
             self.image_cache.notify_pending_response(
                 self.id,
@@ -319,7 +324,7 @@ impl FetchResponseListener for ImageContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        network_listener::submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
@@ -1390,7 +1395,7 @@ impl HTMLImageElement {
             .dom_manipulation_task_source()
             .queue(task!(fulfill_image_decode_promises: move || {
                 for trusted_promise in trusted_image_decode_promises {
-                    trusted_promise.root().resolve_native(&(), CanGc::note());
+                    trusted_promise.root().resolve_native(&(), CanGc::deprecated_note());
                 }
             }));
     }
@@ -1417,7 +1422,7 @@ impl HTMLImageElement {
             .dom_manipulation_task_source()
             .queue(task!(reject_image_decode_promises: move || {
                 for trusted_promise in trusted_image_decode_promises {
-                    trusted_promise.root().reject_error(Error::Encoding(None), CanGc::note());
+                    trusted_promise.root().reject_error(Error::Encoding(None), CanGc::deprecated_note());
                 }
             }));
     }
@@ -1530,20 +1535,20 @@ impl HTMLImageElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
         creator: ElementCreator,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLImageElement> {
         let image_element = Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLImageElement::new_inherited(
                 local_name, prefix, document, creator,
             )),
             document,
             proto,
-            can_gc,
         );
         image_element
             .dimension_attribute_source
@@ -1978,10 +1983,10 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
     make_uint_setter!(SetVspace, "vspace");
 
     // https://html.spec.whatwg.org/multipage/#dom-img-longdesc
-    make_getter!(LongDesc, "longdesc");
+    make_url_getter!(LongDesc, "longdesc");
 
     // https://html.spec.whatwg.org/multipage/#dom-img-longdesc
-    make_setter!(SetLongDesc, "longdesc");
+    make_url_setter!(SetLongDesc, "longdesc");
 
     // https://html.spec.whatwg.org/multipage/#dom-img-border
     make_getter!(Border, "border");

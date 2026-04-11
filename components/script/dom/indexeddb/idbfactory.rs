@@ -4,13 +4,13 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use base::generic_channel::GenericSend;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::inheritance::Castable;
+use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::indexeddb::{
     BackendResult, ConnectionMsg, DatabaseInfo, IndexedDBThreadMsg, SyncOperation,
@@ -221,7 +221,7 @@ impl IDBFactory {
             };
             task_source.queue(task!(set_request_result_to_database: move || {
                 let factory = response_listener.root();
-                factory.handle_connection_message(response, CanGc::note())
+                factory.handle_connection_message(response, CanGc::deprecated_note())
             }));
         })
         .expect("Could not create open database callback");
@@ -525,7 +525,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
         }
 
         // Step 4: Let request be a new open request.
-        let request = IDBOpenDBRequest::new(&self.global(), CanGc::note());
+        let request = IDBOpenDBRequest::new(&self.global(), CanGc::deprecated_note());
 
         // Step 5: Runs in parallel
         if self.open_database(name, version, &request).is_err() {
@@ -554,7 +554,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
         }
 
         // Step 3: Let request be a new open request
-        let request = IDBOpenDBRequest::new(&self.global(), CanGc::note());
+        let request = IDBOpenDBRequest::new(&self.global(), CanGc::deprecated_note());
 
         // Step 4: Runs in parallel
         if request.delete_database(name.to_string()).is_err() {

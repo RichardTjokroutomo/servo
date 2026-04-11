@@ -9,13 +9,13 @@ use std::fmt::Debug;
 use std::ops::Range;
 
 use atomic_refcell::AtomicRefCell;
-use base::id::{BrowsingContextId, PipelineId};
 use fonts::TextByteRange;
 use html5ever::{LocalName, Namespace};
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::Image;
 use pixels::ImageMetadata;
 use servo_arc::Arc;
+use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::context::SharedStyleContext;
@@ -281,7 +281,7 @@ pub trait ThreadSafeLayoutElement<'dom>:
     ///
     ///  1. `pseudo` is eager and is not defined in the stylesheet. In this case, there
     ///     is not reason to process the pseudo element at all.
-    ///  2. `pseudo` is for `::servo-details-summary` or `::servo-details-content` and
+    ///  2. `pseudo` is for `::servo-details-content` and
     ///     it doesn't apply to this element, either because it isn't a details or is
     ///     in the wrong state.
     fn with_pseudo(&self, pseudo: PseudoElement) -> Option<Self>;

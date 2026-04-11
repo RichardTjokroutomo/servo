@@ -23,9 +23,6 @@ use std::net::TcpStream;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::GenericSender;
-use base::id::{BrowsingContextId, PipelineId, WebViewId};
 pub use embedder_traits::ConsoleLogLevel;
 use embedder_traits::Theme;
 use http::{HeaderMap, Method};
@@ -35,6 +32,9 @@ use net_traits::request::Destination;
 use net_traits::{DebugVec, TlsSecurityInfo};
 use profile_traits::mem::ReportsChan;
 use serde::{Deserialize, Serialize};
+use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::generic_channel::GenericSender;
+use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_url::ServoUrl;
 use uuid::Uuid;
 
@@ -45,6 +45,7 @@ pub struct DevtoolsPageInfo {
     pub title: String,
     pub url: ServoUrl,
     pub is_top_level_global: bool,
+    pub is_service_worker: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
@@ -151,53 +152,52 @@ pub enum DomMutation {
     },
 }
 
-/// <https://searchfox.org/mozilla-central/source/devtools/server/actors/object/property-iterator.js#51>
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PropertyPreview {
-    pub name: String,
-    pub configurable: bool,
-    pub enumerable: bool,
-    pub writable: bool,
-    pub is_accessor: bool,
-    pub value_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub boolean_value: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub number_value: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub string_value: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_class: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value_name: Option<String>,
+pub struct ObjectPreview {
+    pub kind: String,
+    pub own_properties: Option<Vec<PropertyDescriptor>>,
+    pub own_properties_length: Option<u32>,
+    pub function: Option<FunctionPreview>,
+    pub array_length: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub enum EvaluateJSReplyValue {
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct FunctionPreview {
+    pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub parameter_names: Vec<String>,
+    pub is_async: Option<bool>,
+    pub is_generator: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub enum DebuggerValue {
     VoidValue,
     NullValue,
     BooleanValue(bool),
     NumberValue(f64),
     StringValue(String),
-    ActorValue {
-        class: String,
+    ObjectValue {
         uuid: String,
-        name: Option<String>,
-        // Function-specific
-        display_name: Option<String>,
-        parameter_names: Option<Vec<String>>,
-        is_async: Option<bool>,
-        is_generator: Option<bool>,
-        // Object preview
-        own_properties: Option<Vec<PropertyPreview>>,
-        own_properties_length: Option<u32>,
+        class: String,
+        preview: Option<ObjectPreview>,
     },
+}
+
+/// <https://searchfox.org/mozilla-central/source/devtools/server/actors/object/property-iterator.js#51>
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+pub struct PropertyDescriptor {
+    pub name: String,
+    pub value: DebuggerValue,
+    pub configurable: bool,
+    pub enumerable: bool,
+    pub writable: bool,
+    pub is_accessor: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EvaluateJSReply {
-    pub value: EvaluateJSReplyValue,
+    pub value: DebuggerValue,
     pub has_exception: bool,
 }
 
@@ -271,6 +271,24 @@ pub struct NodeStyle {
     pub priority: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AncestorData {
+    Layer {
+        actor_id: Option<String>,
+        value: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchedRule {
+    pub selector: String,
+    pub stylesheet_index: usize,
+    pub block_id: usize,
+    pub ancestor_data: Vec<AncestorData>,
+}
+
 /// The properties of a DOM node as computed by layout.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -323,17 +341,12 @@ pub enum DevtoolScriptControlMsg {
     GetStylesheetStyle(
         PipelineId,
         String,
-        String,
-        usize,
+        MatchedRule,
         GenericSender<Option<Vec<NodeStyle>>>,
     ),
     /// Retrieves the CSS selectors for the given node. A selector is comprised of the text
     /// of the selector and the id of the stylesheet that contains it.
-    GetSelectors(
-        PipelineId,
-        String,
-        GenericSender<Option<Vec<(String, usize)>>>,
-    ),
+    GetSelectors(PipelineId, String, GenericSender<Option<Vec<MatchedRule>>>),
     /// Retrieve the computed CSS style properties for the given node.
     GetComputedStyle(PipelineId, String, GenericSender<Option<Vec<NodeStyle>>>),
     /// Get information about event listeners on a node.
@@ -443,40 +456,9 @@ pub struct ConsoleMessageFields {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum ConsoleArgument {
-    String(String),
-    Integer(i32),
-    Number(f64),
-    Boolean(bool),
-    Object(ConsoleArgumentObject),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConsoleArgumentObject {
-    pub class: String,
-    pub own_properties: Vec<ConsoleArgumentPropertyValue>,
-}
-
-/// A property on a JS object passed as a console argument.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConsoleArgumentPropertyValue {
-    pub key: String,
-    pub configurable: bool,
-    pub enumerable: bool,
-    pub writable: bool,
-    pub value: ConsoleArgument,
-}
-
-impl From<String> for ConsoleArgument {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConsoleMessage {
     pub fields: ConsoleMessageFields,
-    pub arguments: Vec<ConsoleArgument>,
+    pub arguments: Vec<DebuggerValue>,
     pub stacktrace: Option<Vec<StackFrame>>,
 }
 
@@ -493,9 +475,7 @@ pub struct PageError {
 #[derive(Debug, PartialEq, MallocSizeOf)]
 pub struct HttpRequest {
     pub url: ServoUrl,
-    #[ignore_malloc_size_of = "http type"]
     pub method: Method,
-    #[ignore_malloc_size_of = "http type"]
     pub headers: HeaderMap,
     pub body: Option<DebugVec>,
     pub pipeline_id: PipelineId,
@@ -640,7 +620,7 @@ pub struct EnvironmentInfo {
     pub type_: Option<String>,
     pub scope_kind: Option<String>,
     pub function_display_name: Option<String>,
-    pub binding_variables: HashMap<String, String>,
+    pub binding_variables: Vec<PropertyDescriptor>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

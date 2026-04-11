@@ -6,6 +6,8 @@ license.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description.workspace = true
 
 [lib]
 name = "fonts"
@@ -18,7 +20,6 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 app_units = { workspace = true }
-base = { workspace = true }
 bitflags = { workspace = true }
 content-security-policy = { workspace = true }
 euclid = { workspace = true }
@@ -40,14 +41,15 @@ paint_api = { workspace = true }
 parking_lot = { workspace = true }
 profile_traits = { workspace = true }
 read-fonts = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
-servo-tracing = { workspace = true }
 servo_arc = { workspace = true }
-servo_config = { workspace = true }
+servo-base = { workspace = true }
+servo-config = { workspace = true }
+servo-tracing = { workspace = true }
 servo-url = { workspace = true }
 skrifa = { workspace = true }
 smallvec = { workspace = true }
-rustc-hash = { workspace = true }
 stylo = { workspace = true }
 stylo_atoms = { workspace = true }
 tracing = { workspace = true, optional = true }
@@ -64,11 +66,11 @@ objc2-core-foundation = { workspace = true }
 objc2-core-graphics = { workspace = true }
 objc2-core-text = { workspace = true }
 
-[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))'.dependencies]
 freetype-sys = { workspace = true }
-servo_allocator = { workspace = true }
+servo-allocator = { workspace = true }
 
-[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+[target.'cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))'.dependencies]
 fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
 
 [target.'cfg(target_os = "android")'.dependencies]

@@ -16,16 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use base::generic_channel;
-use base::generic_channel::{GenericCallback, GenericSend};
-use base::id::{
-    BlobId, BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineId,
-    ServiceWorkerId, ServiceWorkerRegistrationId, WebViewId,
-};
-use constellation_traits::{
-    BlobData, BlobImpl, BroadcastChannelMsg, FileBlob, MessagePortImpl, MessagePortMsg,
-    PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
-};
 use content_security_policy::CspList;
 use crossbeam_channel::Sender;
 use devtools_traits::{PageError, ScriptToDevtoolsControlMsg, get_time_stamp};
@@ -59,10 +49,23 @@ use net_traits::response::HttpsState;
 use net_traits::{
     CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads, fetch_async,
 };
-use profile_traits::{ipc as profile_ipc, mem as profile_mem, time as profile_time};
+use profile_traits::{
+    generic_channel as profile_generic_channel, ipc as profile_ipc, mem as profile_mem,
+    time as profile_time,
+};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::settings_stack::run_a_script;
+use servo_base::generic_channel;
+use servo_base::generic_channel::{GenericCallback, GenericSend};
+use servo_base::id::{
+    BlobId, BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineId,
+    ServiceWorkerId, ServiceWorkerRegistrationId, WebViewId,
+};
+use servo_constellation_traits::{
+    BlobData, BlobImpl, BroadcastChannelMsg, FileBlob, MessagePortImpl, MessagePortMsg,
+    PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
+};
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
 use strum::VariantArray;
@@ -139,7 +142,7 @@ use crate::fetch::{DeferredFetchRecordId, FetchGroup, QueuedDeferredFetchRecord}
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::microtask::Microtask;
 use crate::network_listener::{FetchResponseListener, NetworkListener};
-use crate::realms::{InRealm, enter_auto_realm, enter_realm};
+use crate::realms::{InRealm, enter_auto_realm};
 use crate::script_module::{
     ImportMap, ModuleRequest, ModuleStatus, ResolvedModule, ScriptFetchOptions,
 };
@@ -559,7 +562,7 @@ impl MessageListener {
             MessagePortMsg::CompleteTransfer(ports) => {
                 let context = self.context.clone();
                 self.task_source.queue(
-                    task!(process_complete_transfer: move || {
+                    task!(process_complete_transfer: move |cx| {
                         let global = context.root();
 
                         let router_id = match global.port_router_id() {
@@ -581,10 +584,10 @@ impl MessageListener {
                             if global.is_managing_port(&id) {
                                 succeeded.push(id);
                                 global.complete_port_transfer(
+                                    cx,
                                     id,
                                     info.port_message_queue,
                                     info.disentangled,
-                                    CanGc::note()
                                 );
                             } else {
                                 failed.insert(id, info);
@@ -598,9 +601,9 @@ impl MessageListener {
             },
             MessagePortMsg::CompletePendingTransfer(port_id, info) => {
                 let context = self.context.clone();
-                self.task_source.queue(task!(complete_pending: move || {
+                self.task_source.queue(task!(complete_pending: move |cx| {
                     let global = context.root();
-                    global.complete_port_transfer(port_id, info.port_message_queue, info.disentangled, CanGc::note());
+                    global.complete_port_transfer(cx, port_id, info.port_message_queue, info.disentangled);
                 }));
             },
             MessagePortMsg::CompleteDisentanglement(port_id) => {
@@ -608,14 +611,14 @@ impl MessageListener {
                 self.task_source
                     .queue(task!(try_complete_disentanglement: move || {
                         let global = context.root();
-                        global.try_complete_disentanglement(port_id, CanGc::note());
+                        global.try_complete_disentanglement(port_id, CanGc::deprecated_note());
                     }));
             },
             MessagePortMsg::NewTask(port_id, task) => {
                 let context = self.context.clone();
-                self.task_source.queue(task!(process_new_task: move || {
+                self.task_source.queue(task!(process_new_task: move |cx| {
                     let global = context.root();
-                    global.route_task_to_port(port_id, task, CanGc::note());
+                    global.route_task_to_port(cx, port_id, task);
                 }));
             },
         }
@@ -649,7 +652,7 @@ impl FileListener {
 
                         let task = task!(enqueue_stream_chunk: move || {
                             let stream = trusted.root();
-                            stream_handle_incoming(&stream, Ok(blob_buf.bytes), CanGc::note());
+                            stream_handle_incoming(&stream, Ok(blob_buf.bytes), CanGc::deprecated_note());
                         });
                         self.task_source.queue(task);
 
@@ -671,7 +674,7 @@ impl FileListener {
 
                         let task = task!(enqueue_stream_chunk: move || {
                             let stream = trusted.root();
-                            stream_handle_incoming(&stream, Ok(bytes_in), CanGc::note());
+                            stream_handle_incoming(&stream, Ok(bytes_in), CanGc::deprecated_note());
                         });
 
                         self.task_source.queue(task);
@@ -699,7 +702,7 @@ impl FileListener {
                     FileListenerTarget::Stream(trusted_stream) => {
                         let task = task!(enqueue_stream_chunk: move || {
                             let stream = trusted_stream.root();
-                            stream_handle_eof(&stream, CanGc::note());
+                            stream_handle_eof(&stream, CanGc::deprecated_note());
                         });
 
                         self.task_source.queue(task);
@@ -725,7 +728,7 @@ impl FileListener {
                         FileListenerTarget::Stream(trusted_stream) => {
                             self.task_source.queue(task!(error_stream: move || {
                                 let stream = trusted_stream.root();
-                                stream_handle_incoming(&stream, error, CanGc::note());
+                                stream_handle_incoming(&stream, error, CanGc::deprecated_note());
                             }));
                         },
                     }
@@ -921,10 +924,10 @@ impl GlobalScope {
     /// Complete the transfer of a message-port.
     fn complete_port_transfer(
         &self,
+        cx: &mut js::context::JSContext,
         port_id: MessagePortId,
         tasks: VecDeque<PortMessageTask>,
         disentangled: bool,
-        can_gc: CanGc,
     ) {
         let should_start = if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
@@ -953,7 +956,7 @@ impl GlobalScope {
             panic!("complete_port_transfer called for an unknown port.");
         };
         if should_start {
-            self.start_message_port(&port_id, can_gc);
+            self.start_message_port(cx, &port_id);
         }
     }
 
@@ -1161,7 +1164,11 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-start>
-    pub(crate) fn start_message_port(&self, port_id: &MessagePortId, can_gc: CanGc) {
+    pub(crate) fn start_message_port(
+        &self,
+        cx: &mut js::context::JSContext,
+        port_id: &MessagePortId,
+    ) {
         let (message_buffer, dom_port) = if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
         {
@@ -1181,12 +1188,14 @@ impl GlobalScope {
         };
         if let Some(message_buffer) = message_buffer {
             for task in message_buffer {
-                self.route_task_to_port(*port_id, task, CanGc::note());
+                self.route_task_to_port(cx, *port_id, task);
             }
             if dom_port.disentangled() {
                 // <https://html.spec.whatwg.org/multipage/#disentangle>
                 // Fire an event named close at otherPort.
-                dom_port.upcast().fire_event(atom!("close"), can_gc);
+                dom_port
+                    .upcast()
+                    .fire_event(atom!("close"), CanGc::from_cx(cx));
 
                 let res = self.script_to_constellation_chan().send(
                     ScriptToConstellationMessage::DisentanglePorts(*port_id, None),
@@ -1240,11 +1249,11 @@ impl GlobalScope {
                 let this = Trusted::new(self);
                 self.task_manager()
                     .port_message_queue()
-                    .queue(task!(post_message: move || {
+                    .queue(task!(post_message: move |cx| {
                         let global = this.root();
                         // Note: we do this in a task, as this will ensure the global and constellation
                         // are aware of any transfer that might still take place in the current task.
-                        global.route_task_to_port(entangled_id, task, CanGc::note());
+                        global.route_task_to_port(cx, entangled_id, task);
                     }));
             }
         } else {
@@ -1349,7 +1358,7 @@ impl GlobalScope {
                                 rooted!(in(*GlobalScope::get_cx()) let mut message = UndefinedValue());
 
                                 // Step 10.3 StructuredDeserialize(serialized, targetRealm).
-                                if let Ok(ports) = structuredclone::read(&global, data, message.handle_mut(), CanGc::note()) {
+                                if let Ok(ports) = structuredclone::read(&global, data, message.handle_mut(), CanGc::deprecated_note()) {
                                     // Step 10.4, Fire an event named message at destination.
                                     MessageEvent::dispatch_jsval(
                                         destination.upcast(),
@@ -1358,17 +1367,28 @@ impl GlobalScope {
                                         Some(&origin.ascii_serialization()),
                                         None,
                                         ports,
-                                        CanGc::note()
+                                        CanGc::deprecated_note()
                                     );
                                 } else {
                                     // Step 10.3, fire an event named messageerror at destination.
-                                    MessageEvent::dispatch_error(destination.upcast(), &global, CanGc::note());
+                                    MessageEvent::dispatch_error(destination.upcast(), &global, CanGc::deprecated_note());
                                 }
                             })
                         );
                     });
             }
         }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#encoding-parsing-a-url>
+    pub(crate) fn encoding_parse_a_url(&self, url: &str) -> Result<ServoUrl, url::ParseError> {
+        if let Some(window) = self.downcast::<Window>() {
+            return window.Document().encoding_parse_a_url(url);
+        }
+
+        // encoding parsing for worker environments.
+        let base = self.api_base_url();
+        base.join(url)
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-setupcrossrealmtransformreadable>
@@ -1423,14 +1443,13 @@ impl GlobalScope {
 
     /// Custom routing logic, followed by the task steps of
     /// <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
-    pub(crate) fn route_task_to_port(
+    fn route_task_to_port(
         &self,
+        cx: &mut js::context::JSContext,
         port_id: MessagePortId,
         task: PortMessageTask,
-        can_gc: CanGc,
     ) {
-        let cx = GlobalScope::get_cx();
-        rooted!(in(*cx) let mut cross_realm_transform = None);
+        rooted!(&in(cx) let mut cross_realm_transform = None);
 
         let should_dispatch = if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
@@ -1473,10 +1492,10 @@ impl GlobalScope {
 
             // Let messageClone be deserializeRecord.[[Deserialized]].
             // Re-ordered because we need to pass it to `structuredclone::read`.
-            rooted!(in(*cx) let mut message_clone = UndefinedValue());
+            rooted!(&in(cx) let mut message_clone = UndefinedValue());
 
-            let realm = enter_realm(self);
-            let comp = InRealm::Entered(&realm);
+            let mut realm = enter_auto_realm(cx, self);
+            let cx = &mut realm.current_realm();
 
             // Note: this is necessary, on top of entering the realm above,
             // for the call to `GlobalScope::incumbent`,
@@ -1487,9 +1506,12 @@ impl GlobalScope {
                 // consisting of all MessagePort objects in deserializeRecord.[[TransferredValues]],
                 // if any, maintaining their relative order.
                 // Note: both done in `structuredclone::read`.
-                if let Ok(ports) =
-                    structuredclone::read(self, data, message_clone.handle_mut(), can_gc)
-                {
+                if let Ok(ports) = structuredclone::read(
+                    self,
+                    data,
+                    message_clone.handle_mut(),
+                    CanGc::from_cx(cx),
+                ) {
                     // Note: if this port is used to transfer a stream, we handle the events in Rust.
                     if let Some(transform) = cross_realm_transform.deref().as_ref() {
                         match transform {
@@ -1501,20 +1523,12 @@ impl GlobalScope {
                                     self,
                                     &dom_port,
                                     message_clone.handle(),
-                                    comp,
-                                    can_gc,
                                 );
                             },
                             // Add a handler for port’s message event with the following steps:
                             // from <https://streams.spec.whatwg.org/#abstract-opdef-setupcrossrealmtransformwritable>
                             CrossRealmTransform::Writable(writable) => {
-                                writable.handle_message(
-                                    cx,
-                                    self,
-                                    message_clone.handle(),
-                                    comp,
-                                    can_gc,
-                                );
+                                writable.handle_message(cx, self, message_clone.handle());
                             },
                         }
                     } else {
@@ -1529,7 +1543,7 @@ impl GlobalScope {
                             Some(&origin.ascii_serialization()),
                             None,
                             ports,
-                            can_gc,
+                            CanGc::from_cx(cx),
                         );
                     }
                 } else if let Some(transform) = cross_realm_transform.deref().as_ref() {
@@ -1537,19 +1551,19 @@ impl GlobalScope {
                         // Add a handler for port’s messageerror event with the following steps:
                         // from <https://streams.spec.whatwg.org/#abstract-opdef-setupcrossrealmtransformreadable>
                         CrossRealmTransform::Readable(readable) => {
-                            readable.handle_error(cx, self, &dom_port, comp, can_gc);
+                            readable.handle_error(cx, self, &dom_port);
                         },
                         // Add a handler for port’s messageerror event with the following steps:
                         // from <https://streams.spec.whatwg.org/#abstract-opdef-setupcrossrealmtransformwritable>
                         CrossRealmTransform::Writable(writable) => {
-                            writable.handle_error(cx, self, &dom_port, comp, can_gc);
+                            writable.handle_error(cx, self, &dom_port);
                         },
                     }
                 } else {
                     // If this throws an exception, catch it,
                     // fire an event named messageerror at messageEventTarget,
                     // using MessageEvent, and then return.
-                    MessageEvent::dispatch_error(message_event_target, self, can_gc);
+                    MessageEvent::dispatch_error(message_event_target, self, CanGc::from_cx(cx));
                 }
             });
         }
@@ -1876,7 +1890,7 @@ impl GlobalScope {
     fn decrement_file_ref(&self, id: Uuid) {
         let origin = self.origin().immutable();
 
-        let (tx, rx) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
+        let (tx, rx) = profile_generic_channel::channel(self.time_profiler_chan().clone()).unwrap();
 
         let msg = FileManagerThreadMsg::DecRef(id, origin.clone(), tx);
         self.send_to_file_manager(msg);
@@ -2071,7 +2085,7 @@ impl GlobalScope {
     ) -> Uuid {
         let origin = self.origin().immutable();
 
-        let (tx, rx) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
+        let (tx, rx) = profile_generic_channel::channel(self.time_profiler_chan().clone()).unwrap();
         let msg =
             FileManagerThreadMsg::AddSlicedURLEntry(*parent_file_id, *rel_pos, tx, origin.clone());
         self.send_to_file_manager(msg);
@@ -2868,13 +2882,13 @@ impl GlobalScope {
 
         run_a_script::<DomTypeHolder, _>(self, || {
             let url = self.api_base_url();
-            let fetch_options = ScriptFetchOptions::default_classic_script(self);
+            let fetch_options = ScriptFetchOptions::default_classic_script();
 
             let no_script_rval = rval.is_none();
 
             rooted!(&in(cx) let mut compiled_script = std::ptr::null_mut::<JSScript>());
             compiled_script.set(compile_script(
-                cx.into(),
+                cx,
                 &code,
                 filename,
                 1,
@@ -2894,7 +2908,7 @@ impl GlobalScope {
             rooted!(&in(cx) let mut value = UndefinedValue());
             let rval = rval.unwrap_or_else(|| value.handle_mut());
 
-            if !evaluate_script(cx.into(), script, url, fetch_options, rval) {
+            if !evaluate_script(cx, script, url, fetch_options, rval) {
                 let error_info = take_and_report_pending_exception_for_api(cx);
                 return Err(JavaScriptEvaluationError::EvaluationFailure(error_info));
             }
@@ -2989,7 +3003,7 @@ impl GlobalScope {
     /// Returns the idb factory for this global.
     pub(crate) fn get_indexeddb(&self) -> DomRoot<IDBFactory> {
         self.indexeddb
-            .or_init(|| IDBFactory::new(self, CanGc::note()))
+            .or_init(|| IDBFactory::new(self, CanGc::deprecated_note()))
     }
 
     pub(crate) fn get_existing_indexeddb(&self) -> Option<DomRoot<IDBFactory>> {
@@ -3210,7 +3224,7 @@ impl GlobalScope {
             DeviceLostReason::Unknown => GPUDeviceLostReason::Unknown,
             DeviceLostReason::Destroyed => GPUDeviceLostReason::Destroyed,
         };
-        let _ac = enter_realm(self);
+        let _ac = crate::realms::enter_realm(self);
         if let Some(device) = self
             .gpu_devices
             .borrow_mut()

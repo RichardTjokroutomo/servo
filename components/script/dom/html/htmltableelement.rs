@@ -74,19 +74,19 @@ impl HTMLTableElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLTableElement> {
         let n = Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLTableElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         );
 
         n.upcast::<Node>().set_weird_parser_insertion_mode();
@@ -204,7 +204,7 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
             &self.owner_window(),
             self.upcast(),
             Box::new(filter),
-            CanGc::note(),
+            CanGc::deprecated_note(),
         )
     }
 
@@ -327,7 +327,7 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
                         element.local_name() == &local_name!("tbody") &&
                         element.upcast::<Node>().GetParentNode().as_deref() == Some(root)
                 },
-                CanGc::note(),
+                CanGc::deprecated_note(),
             )
         })
     }
@@ -475,6 +475,18 @@ impl HTMLTableElementMethods<crate::DomTypeHolder> for HTMLTableElement {
 
     // <https://html.spec.whatwg.org/multipage/#dom-table-width>
     make_nonzero_dimension_setter!(SetWidth, "width");
+
+    // <https://html.spec.whatwg.org/multipage/#dom-table-align>
+    make_setter!(SetAlign, "align");
+    make_getter!(Align, "align");
+
+    // <https://html.spec.whatwg.org/multipage/#dom-table-cellpadding>
+    make_setter!(SetCellPadding, "cellpadding");
+    make_getter!(CellPadding, "cellpadding");
+
+    // <https://html.spec.whatwg.org/multipage/#dom-table-cellspacing>
+    make_setter!(SetCellSpacing, "cellspacing");
+    make_getter!(CellSpacing, "cellspacing");
 }
 
 pub(crate) trait HTMLTableElementLayoutHelpers {

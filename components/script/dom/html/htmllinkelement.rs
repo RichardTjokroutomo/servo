@@ -7,7 +7,6 @@ use std::cell::Cell;
 use std::default::Default;
 use std::str::FromStr;
 
-use base::generic_channel::GenericSharedMemory;
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
@@ -23,6 +22,7 @@ use net_traits::{
 use pixels::PixelFormat;
 use script_bindings::root::Dom;
 use servo_arc::Arc;
+use servo_base::generic_channel::GenericSharedMemory;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::media_queries::MediaList as StyleMediaList;
@@ -140,20 +140,20 @@ impl HTMLLinkElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
         creator: ElementCreator,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLLinkElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLLinkElement::new_inherited(
                 local_name, prefix, document, creator,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -296,7 +296,7 @@ impl VirtualMethods for HTMLLinkElement {
                 }
 
                 if self.relations.get().contains(LinkRelations::MODULE_PRELOAD) {
-                    self.fetch_and_process_modulepreload(CanGc::from_cx(cx));
+                    self.fetch_and_process_modulepreload(cx);
                 }
             },
             local_name!("href") => {
@@ -335,7 +335,7 @@ impl VirtualMethods for HTMLLinkElement {
 
                 // https://html.spec.whatwg.org/multipage/#link-type-modulepreload
                 if self.relations.get().contains(LinkRelations::MODULE_PRELOAD) {
-                    self.fetch_and_process_modulepreload(CanGc::from_cx(cx));
+                    self.fetch_and_process_modulepreload(cx);
                 }
             },
             local_name!("sizes") if self.relations.get().contains(LinkRelations::ICON) => {
@@ -475,7 +475,7 @@ impl VirtualMethods for HTMLLinkElement {
                     let link = DomRoot::from_ref(self);
                     self.owner_document().add_delayed_task(
                         task!(FetchModulePreload: |cx, link: DomRoot<HTMLLinkElement>| {
-                            link.fetch_and_process_modulepreload(CanGc::from_cx(cx));
+                            link.fetch_and_process_modulepreload(cx);
                         }),
                     );
                 }
@@ -639,7 +639,7 @@ impl HTMLLinkElement {
             // Step 5. If request is null, then return.
             return;
         };
-        let url = request.url.clone();
+        let url = request.url.url();
 
         // Step 6. Set request's initiator to "prefetch".
         let request = request.initiator(Initiator::Prefetch);
@@ -949,7 +949,7 @@ impl HTMLLinkElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#link-type-modulepreload:fetch-and-process-the-linked-resource-2>
-    fn fetch_and_process_modulepreload(&self, can_gc: CanGc) {
+    fn fetch_and_process_modulepreload(&self, cx: &mut JSContext) {
         let el = self.upcast::<Element>();
         let href_attribute_value = el.get_string_attribute(&local_name!("href"));
 
@@ -1032,23 +1032,31 @@ impl HTMLLinkElement {
             parser_metadata: ParserMetadata::NotParserInserted,
             credentials_mode,
             referrer_policy,
-            referrer: global.get_referrer(),
+            render_blocking: false,
         };
 
         let link = DomRoot::from_ref(self);
 
         // Step 14. Fetch a modulepreload module script graph given url, destination, settings object, options,
         // and with the following steps given result:
-        fetch_a_modulepreload_module(url, destination, &global, options, move |fetch_failed| {
-            // Step 1. If result is null, then fire an event named error at el, and return.
-            // Step 2. Fire an event named load at el.
-            let event = match fetch_failed {
-                true => atom!("error"),
-                false => atom!("load"),
-            };
+        fetch_a_modulepreload_module(
+            cx,
+            url,
+            destination,
+            &global,
+            options,
+            move |cx, fetch_failed| {
+                // Step 1. If result is null, then fire an event named error at el, and return.
+                // Step 2. Fire an event named load at el.
+                let event = match fetch_failed {
+                    true => atom!("error"),
+                    false => atom!("load"),
+                };
 
-            link.upcast::<EventTarget>().fire_event(event, can_gc);
-        });
+                link.upcast::<EventTarget>()
+                    .fire_event(event, CanGc::from_cx(cx));
+            },
+        );
     }
 }
 
@@ -1092,7 +1100,10 @@ impl StylesheetOwner for HTMLLinkElement {
     }
 
     fn referrer_policy(&self) -> ReferrerPolicy {
-        if self.RelList(CanGc::note()).Contains("noreferrer".into()) {
+        if self
+            .RelList(CanGc::deprecated_note())
+            .Contains("noreferrer".into())
+        {
             return ReferrerPolicy::NoReferrer;
         }
 
@@ -1100,7 +1111,7 @@ impl StylesheetOwner for HTMLLinkElement {
     }
 
     fn set_origin_clean(&self, origin_clean: bool) {
-        if let Some(stylesheet) = self.get_cssom_stylesheet(CanGc::note()) {
+        if let Some(stylesheet) = self.get_cssom_stylesheet(CanGc::deprecated_note()) {
             stylesheet.set_origin_clean(origin_clean);
         }
     }
@@ -1262,10 +1273,9 @@ struct FaviconFetchContext {
 impl FetchResponseListener for FaviconFetchContext {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -1275,7 +1285,12 @@ impl FetchResponseListener for FaviconFetchContext {
         );
     }
 
-    fn process_response_chunk(&mut self, request_id: RequestId, chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        request_id: RequestId,
+        chunk: Vec<u8>,
+    ) {
         self.image_cache.notify_pending_response(
             self.id,
             FetchResponseMsg::ProcessResponseChunk(request_id, chunk.into()),
@@ -1293,7 +1308,7 @@ impl FetchResponseListener for FaviconFetchContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {

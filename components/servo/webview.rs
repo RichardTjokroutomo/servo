@@ -7,20 +7,24 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use base::generic_channel::GenericSender;
-use base::id::WebViewId;
-use constellation_traits::{EmbedderToConstellationMessage, TraversalDirection};
+use accesskit::{
+    Node as AccesskitNode, NodeId, Role, Tree, TreeId, TreeUpdate, Uuid as AccesskitUuid,
+};
 use dpi::PhysicalSize;
 use embedder_traits::{
     ContextMenuAction, ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlRequest, Image,
     InputEvent, InputEventAndId, InputEventId, JSValue, JavaScriptEvaluationError, LoadStatus,
     MediaSessionActionType, NewWebViewDetails, ScreenGeometry, ScreenshotCaptureError, Scroll,
-    Theme, TraversalId, ViewportDetails, WebViewPoint, WebViewRect,
+    Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint, WebViewRect,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
 use paint_api::WebViewTrait;
 use paint_api::rendering_context::RenderingContext;
+use servo_base::generic_channel::GenericSender;
+use servo_base::id::WebViewId;
+use servo_config::pref;
+use servo_constellation_traits::{EmbedderToConstellationMessage, TraversalDirection};
 use servo_geometry::DeviceIndependentPixel;
 use servo_url::ServoUrl;
 use style_traits::CSSPixel;
@@ -31,6 +35,7 @@ use crate::clipboard_delegate::{ClipboardDelegate, DefaultClipboardDelegate};
 #[cfg(feature = "gamepad")]
 use crate::gamepad_delegate::{DefaultGamepadDelegate, GamepadDelegate};
 use crate::responders::IpcResponder;
+use crate::servo::PendingHandledInputEvent;
 use crate::webview_delegate::{CreateNewWebViewRequest, DefaultWebViewDelegate, WebViewDelegate};
 use crate::{
     ColorPicker, ContextMenu, EmbedderControl, InputMethodControl, SelectElement, Servo,
@@ -44,10 +49,14 @@ pub(crate) const MINIMUM_WEBVIEW_SIZE: Size2D<i32, DevicePixel> = Size2D::new(1,
 /// considers that the webview has closed and will clean up all associated resources related
 /// to this webview.
 ///
+/// ## Creating a WebView
+///
+/// To create a [`WebView`], use [`WebViewBuilder`].
+///
 /// ## Rendering Model
 ///
-/// Every [`WebView`] has a [`RenderingContext`](crate::RenderingContext). The embedder manages when
-/// the contents of the [`WebView`] paint to the [`RenderingContext`](crate::RenderingContext). When
+/// Every [`WebView`] has a [`RenderingContext`]. The embedder manages when
+/// the contents of the [`WebView`] paint to the [`RenderingContext`]. When
 /// a [`WebView`] needs to be painted, for instance, because its contents have changed, Servo will
 /// call [`WebViewDelegate::notify_new_frame_ready`] in order to signal that it is time to repaint
 /// the [`WebView`] using [`WebView::paint`].
@@ -57,8 +66,8 @@ pub(crate) const MINIMUM_WEBVIEW_SIZE: Size2D<i32, DevicePixel> = Size2D::new(1,
 /// 1. [`WebViewDelegate::notify_new_frame_ready`] is called. The applications triggers a request
 ///    to repaint the window that contains this [`WebView`].
 /// 2. During window repainting, the application calls [`WebView::paint`] and the contents of the
-///    [`RenderingContext`][crate::RenderingContext] are updated.
-/// 3. If the [`RenderingContext`][crate::RenderingContext] is double-buffered, the
+///    [`RenderingContext`] are updated.
+/// 3. If the [`RenderingContext`] is double-buffered, the
 ///    application then calls [`crate::RenderingContext::present()`] in order to swap the back buffer
 ///    to the front, finally displaying the updated [`WebView`] contents.
 ///
@@ -88,6 +97,15 @@ pub(crate) struct WebViewInner {
     pub(crate) clipboard_delegate: Rc<dyn ClipboardDelegate>,
     #[cfg(feature = "gamepad")]
     pub(crate) gamepad_delegate: Rc<dyn GamepadDelegate>,
+
+    /// AccessKit subtree id for this [`WebView`], if accessibility is active.
+    ///
+    /// Set by [`WebView::set_accessibility_active()`], and forwarded to the constellation via
+    /// [`EmbedderToConstellationMessage::SetAccessibilityActive`].
+    pub(crate) accesskit_tree_id: Option<TreeId>,
+    /// [`TreeId`] of the web contents of this [`WebView`]’s active top-level pipeline,
+    /// which is grafted into the tree for this [`WebView`].
+    pub(crate) grafted_accesskit_tree_id: Option<TreeId>,
 
     rendering_context: Rc<dyn RenderingContext>,
     user_content_manager: Option<Rc<UserContentManager>>,
@@ -136,6 +154,8 @@ impl WebView {
             gamepad_delegate: builder
                 .gamepad_delegate
                 .unwrap_or_else(|| Rc::new(DefaultGamepadDelegate)),
+            accesskit_tree_id: None,
+            grafted_accesskit_tree_id: None,
             hidpi_scale_factor: builder.hidpi_scale_factor,
             load_status: LoadStatus::Started,
             status_text: None,
@@ -437,7 +457,18 @@ impl WebView {
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::LoadUrl(
                 self.id(),
-                url.into(),
+                UrlRequest::new(url),
+            ))
+    }
+
+    /// Load a [`UrlRequest`] into this [`WebView`].
+    pub fn load_request(&self, url_request: UrlRequest) {
+        self.inner()
+            .servo
+            .constellation_proxy()
+            .send(EmbedderToConstellationMessage::LoadUrl(
+                self.id(),
+                url_request,
             ))
     }
 
@@ -494,21 +525,23 @@ impl WebView {
     pub fn notify_input_event(&self, event: InputEvent) -> InputEventId {
         let event: InputEventAndId = event.into();
         let event_id = event.id;
-
+        let webview_id = self.id();
+        let servo = &self.inner().servo;
         // Events with a `point` first go to `Paint` for hit testing.
         if event.event.point().is_some() {
-            self.inner()
-                .servo
-                .paint()
-                .notify_input_event(self.id(), event);
+            if !servo.paint().notify_input_event(self.id(), event) {
+                servo.add_pending_handled_input_event(PendingHandledInputEvent {
+                    event_id,
+                    webview_id,
+                });
+                servo.event_loop_waker().wake();
+            }
         } else {
-            self.inner().servo.constellation_proxy().send(
-                EmbedderToConstellationMessage::ForwardInputEvent(
-                    self.id(),
-                    event,
-                    None, /* hit_test */
-                ),
-            );
+            servo
+                .constellation_proxy()
+                .send(EmbedderToConstellationMessage::ForwardInputEvent(
+                    webview_id, event, None, /* hit_test */
+                ));
         }
 
         event_id
@@ -529,9 +562,7 @@ impl WebView {
     /// zoom, which will adjust the `devicePixelRatio` of the page and cause it to modify
     /// its layout.
     ///
-    /// These values will be clamped internally. The values used for clamping can be
-    /// adjusted by page content when `<meta viewport>` parsing is enabled via
-    /// `Prefs::viewport_meta_enabled`.
+    /// These values will be clamped internally to the inclusive range [0.1, 10.0]).
     pub fn set_page_zoom(&self, new_zoom: f32) {
         self.inner()
             .servo
@@ -551,8 +582,9 @@ impl WebView {
     /// zoom, which is a type of zoom which does not modify layout, and instead simply
     /// magnifies the view in the viewport.
     ///
-    /// The final pinch zoom values will be clamped to reasonable defaults (currently to
-    /// the inclusive range [1.0, 10.0]).
+    /// The final pinch zoom values will be clamped to defaults (the inclusive range [1.0, 10.0]).
+    /// The values used for clamping can be adjusted by page content when `<meta viewport>`
+    /// parsing is enabled via `Prefs::viewport_meta_enabled`, exclusively on mobile devices.
     pub fn adjust_pinch_zoom(&self, pinch_zoom_delta: f32, center: DevicePoint) {
         self.inner()
             .servo
@@ -692,11 +724,10 @@ impl WebView {
     ) {
         let constellation_proxy = self.inner().servo.constellation_proxy().clone();
         let embedder_control = match embedder_control_request {
-            EmbedderControlRequest::SelectElement(options, selected_option) => {
+            EmbedderControlRequest::SelectElement(request) => {
                 EmbedderControl::SelectElement(SelectElement {
                     id: control_id,
-                    options,
-                    selected_option,
+                    select_element_request: request,
                     position,
                     constellation_proxy,
                     response_sent: false,
@@ -755,6 +786,81 @@ impl WebView {
         self.delegate()
             .show_embedder_control(self.clone(), embedder_control);
     }
+
+    /// AccessKit subtree id for this [`WebView`], if accessibility is active.
+    pub fn accesskit_tree_id(&self) -> Option<TreeId> {
+        self.inner().accesskit_tree_id
+    }
+
+    /// Activate or deactivate accessibility features for this [`WebView`], returning the
+    /// AccessKit subtree id if accessibility is now active.
+    ///
+    /// After accessibility is activated, you must [graft] (with [`set_tree_id()`]) the returned
+    /// [`TreeId`] into your application’s main AccessKit tree as soon as possible, *before*
+    /// sending any tree updates from the webview to your AccessKit adapter. Otherwise you may
+    /// violate AccessKit’s subtree invariants and **panic**.
+    ///
+    /// If your impl for [`WebViewDelegate::notify_accessibility_tree_update()`] can’t create the
+    /// graft node (and send *that* update to AccessKit) before sending any updates from this
+    /// webview to AccessKit, then it must queue those updates until it can guarantee that.
+    ///
+    /// [graft]: https://docs.rs/accesskit/0.24.0/accesskit/struct.Node.html#method.tree_id
+    /// [`set_tree_id()`]: https://docs.rs/accesskit/0.24.0/accesskit/struct.Node.html#method.set_tree_id
+    pub fn set_accessibility_active(&self, active: bool) -> Option<TreeId> {
+        if !pref!(accessibility_enabled) {
+            return None;
+        }
+
+        if active == self.inner().accesskit_tree_id.is_some() {
+            return self.accesskit_tree_id();
+        }
+
+        if active {
+            let accesskit_tree_id = TreeId(AccesskitUuid::new_v4());
+            self.inner_mut().accesskit_tree_id = Some(accesskit_tree_id);
+        } else {
+            self.inner_mut().accesskit_tree_id = None;
+        }
+
+        self.inner().servo.constellation_proxy().send(
+            EmbedderToConstellationMessage::SetAccessibilityActive(self.id(), active),
+        );
+
+        self.accesskit_tree_id()
+    }
+
+    pub(crate) fn notify_document_accessibility_tree_id(&self, grafted_tree_id: TreeId) {
+        let Some(webview_accesskit_tree_id) = self.inner().accesskit_tree_id else {
+            return;
+        };
+        let old_grafted_tree_id = self
+            .inner_mut()
+            .grafted_accesskit_tree_id
+            .replace(grafted_tree_id);
+        // TODO(accessibility): try to avoid duplicate notifications in the first place?
+        if old_grafted_tree_id == Some(grafted_tree_id) {
+            return;
+        }
+        let root_node_id = NodeId(0);
+        let mut root_node = AccesskitNode::new(Role::ScrollView);
+        let graft_node_id = NodeId(1);
+        let mut graft_node = AccesskitNode::new(Role::GenericContainer);
+        graft_node.set_tree_id(grafted_tree_id);
+        root_node.set_children(vec![graft_node_id]);
+        self.delegate().notify_accessibility_tree_update(
+            self.clone(),
+            TreeUpdate {
+                nodes: vec![(root_node_id, root_node), (graft_node_id, graft_node)],
+                tree: Some(Tree {
+                    root: root_node_id,
+                    toolkit_name: None,
+                    toolkit_version: None,
+                }),
+                tree_id: webview_accesskit_tree_id,
+                focus: root_node_id,
+            },
+        );
+    }
 }
 
 /// A structure used to expose a view of the [`WebView`] to the Servo
@@ -781,7 +887,7 @@ impl WebViewTrait for ServoRendererWebView {
     }
 }
 
-/// Builder for [`WebView`].
+/// Builder for creating a [`WebView`].
 pub struct WebViewBuilder {
     servo: Servo,
     rendering_context: Rc<dyn RenderingContext>,

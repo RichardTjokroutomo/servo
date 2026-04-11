@@ -72,19 +72,19 @@ impl HTMLOptionElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLOptionElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLOptionElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -221,7 +221,7 @@ impl HTMLOptionElement {
     /// <https://html.spec.whatwg.org/multipage/#clone-an-option-into-a-selectedcontent>
     fn clone_an_option_into_selectedcontent(&self, cx: &mut JSContext, selectedcontent: &Element) {
         // Step 1. Let documentFragment be a new DocumentFragment whose node document is option's node document.
-        let document_fragment = DocumentFragment::new(&self.owner_document(), CanGc::from_cx(cx));
+        let document_fragment = DocumentFragment::new(cx, &self.owner_document());
 
         // Step 2. For each child of option's children:
         for child in self.upcast::<Node>().children() {
@@ -418,20 +418,32 @@ impl VirtualMethods for HTMLOptionElement {
                 self.update_select_validity(CanGc::from_cx(cx));
             },
             local_name!("selected") => {
+                let mut selectedness_changed = false;
                 match mutation {
                     AttributeMutation::Set(..) => {
                         // https://html.spec.whatwg.org/multipage/#concept-option-selectedness
-                        if !self.dirtiness.get() {
-                            self.selectedness.set(true);
+                        if !self.dirtiness.get() && !self.selectedness.get() {
+                            self.set_selectedness(true);
+                            selectedness_changed = true;
                         }
                     },
                     AttributeMutation::Removed => {
                         // https://html.spec.whatwg.org/multipage/#concept-option-selectedness
-                        if !self.dirtiness.get() {
-                            self.selectedness.set(false);
+                        if !self.dirtiness.get() && self.selectedness.get() {
+                            self.set_selectedness(false);
+                            selectedness_changed = true;
                         }
                     },
                 }
+
+                if selectedness_changed {
+                    self.pick_if_selected_and_reset();
+
+                    if let Some(select_element) = self.owner_select_element() {
+                        select_element.update_shadow_tree(cx);
+                    }
+                }
+
                 self.update_select_validity(CanGc::from_cx(cx));
             },
             local_name!("label") => {

@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+//! Preferences are the global configuration options that can be changed at runtime.
+
 use std::env::consts::ARCH;
 use std::sync::{RwLock, RwLockReadGuard};
 use std::time::Duration;
@@ -13,7 +15,12 @@ pub use crate::pref_util::PrefValue;
 
 static PREFERENCES: RwLock<Preferences> = RwLock::new(Preferences::const_default());
 
+/// A trait to be implemented by components that wish to be notified about runtime changes to the
+/// global preferences for the current process.
 pub trait PreferencesObserver: Send + Sync {
+    /// This method is called when the global preferences have been updated. The argument to the
+    /// method is an array of tuples where the first component is the name of the preference and
+    /// the second component is the new value of the preference.
     fn prefs_changed(&self, _changes: &[(&'static str, PrefValue)]) {}
 }
 
@@ -25,10 +32,13 @@ pub fn get() -> RwLockReadGuard<'static, Preferences> {
     PREFERENCES.read().unwrap()
 }
 
+/// Subscribe to notifications about changes to the global preferences for the current process.
 pub fn add_observer(observer: Box<dyn PreferencesObserver>) {
     OBSERVERS.write().unwrap().push(observer);
 }
 
+/// Update the values of the global preferences for the current process. This also notifies the
+/// observers previously added using [`add_observer`].
 pub fn set(preferences: Preferences) {
     // Map between Stylo preference names and Servo preference names as the This should be
     // kept in sync with components/script/dom/bindings/codegen/run.py which generates the
@@ -72,6 +82,7 @@ macro_rules! pref {
     };
 }
 
+/// The set of global preferences supported by Servo.
 #[derive(Clone, Deserialize, Serialize, ServoPreferences)]
 pub struct Preferences {
     pub fonts_default: String,
@@ -96,6 +107,7 @@ pub struct Preferences {
     pub dom_abort_controller_enabled: bool,
     // feature: Adopted Stylesheet | #38132 | Web/API/Document/adoptedStyleSheets
     pub dom_adoptedstylesheet_enabled: bool,
+    pub dom_allow_preloading_module_descendants: bool,
     // feature: Clipboard API | #36084 | Web/API/Clipboard_API
     pub dom_async_clipboard_enabled: bool,
     pub dom_bluetooth_enabled: bool,
@@ -332,6 +344,7 @@ impl Preferences {
             devtools_server_listen_address: String::new(),
             dom_abort_controller_enabled: true,
             dom_adoptedstylesheet_enabled: false,
+            dom_allow_preloading_module_descendants: false,
             dom_allow_scripts_to_close_windows: false,
             dom_async_clipboard_enabled: false,
             dom_bluetooth_enabled: false,

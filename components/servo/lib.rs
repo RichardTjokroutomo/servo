@@ -15,6 +15,7 @@
 mod clipboard_delegate;
 #[cfg(feature = "gamepad")]
 mod gamepad_delegate;
+#[cfg(feature = "media-gstreamer")]
 mod gstreamer_plugins;
 mod javascript_evaluator;
 mod network_manager;
@@ -30,10 +31,8 @@ mod webview_delegate;
 // These are Servo's public exports. Everything (apart from a couple exceptions below)
 // should be exported at the root. See <https://github.com/servo/servo/issues/18475>.
 pub use accesskit;
-pub use base::generic_channel::GenericSender;
-pub use base::id::WebViewId;
 pub use embedder_traits::user_contents::UserScript;
-pub use embedder_traits::*;
+pub use embedder_traits::{submit_resource_reader, *};
 pub use image::RgbaImage;
 pub use keyboard_types::{
     Code, CompositionEvent, CompositionState, Key, KeyState, Location, Modifiers, NamedKey,
@@ -51,6 +50,8 @@ pub use paint_api::rendering_context::{
 // This should be replaced with an API on ServoBuilder.
 // See <https://github.com/servo/servo/issues/40950>.
 pub use resources;
+pub use servo_base::generic_channel::GenericSender;
+pub use servo_base::id::WebViewId;
 pub use servo_config::opts::{DiagnosticsLogging, Opts, OutputOptions};
 pub use servo_config::prefs::{PrefValue, Preferences, UserAgentPlatform};
 pub use servo_config::{opts, pref, prefs};
@@ -76,10 +77,10 @@ pub use crate::site_data_manager::{SiteData, SiteDataManager, StorageType};
 pub use crate::user_content_manager::UserContentManager;
 pub use crate::webview::{WebView, WebViewBuilder};
 pub use crate::webview_delegate::{
-    AlertDialog, AllowOrDenyRequest, AuthenticationRequest, ColorPicker, ConfirmDialog,
-    ContextMenu, CreateNewWebViewRequest, EmbedderControl, FilePicker, InputMethodControl,
-    NavigationRequest, PermissionRequest, PromptDialog, SelectElement, SimpleDialog,
-    WebResourceLoad, WebViewDelegate,
+    AlertDialog, AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest,
+    ColorPicker, ConfirmDialog, ContextMenu, CreateNewWebViewRequest, EmbedderControl, FilePicker,
+    InputMethodControl, NavigationRequest, PermissionRequest, PromptDialog, SelectElement,
+    SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
 
 #[cfg(feature = "webxr")]
@@ -106,3 +107,7 @@ pub mod protocol_handler {
 
     pub use crate::webview_delegate::ProtocolHandlerRegistration;
 }
+
+// We need to reference this crate, in order for the linker not to remove it.
+#[cfg(all(feature = "baked-in-resources", not(target_env = "ohos")))]
+use servo_default_resources as _;

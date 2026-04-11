@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use app_units::Au;
-use base::id::{PainterId, WebViewId};
 use content_security_policy::Violation;
 use fonts_traits::{
     CSSFontFaceDescriptors, FontDescriptor, FontIdentifier, FontTemplate, FontTemplateRef,
@@ -17,6 +16,7 @@ use fonts_traits::{
 };
 use log::{debug, trace};
 use malloc_size_of_derive::MallocSizeOf;
+use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     CredentialsMode, Destination, InsecureRequestsPolicy, Referrer, RequestBuilder, RequestClient,
@@ -29,6 +29,7 @@ use paint_api::CrossProcessPaintApi;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::FxHashSet;
 use servo_arc::Arc as ServoArc;
+use servo_base::id::{PainterId, WebViewId};
 use servo_config::pref;
 use servo_url::ServoUrl;
 use style::Atom;
@@ -459,6 +460,35 @@ impl FontContext {
 
         false
     }
+
+    fn is_local_or_unknown_url_font(
+        &self,
+        family_name: &LowercaseFontFamilyName,
+        source: &Source,
+    ) -> bool {
+        match source {
+            Source::Url(url) => !url
+                .url
+                .url()
+                .cloned()
+                .map(ServoUrl::from)
+                .map(FontIdentifier::Web)
+                .filter(|font_identifier| self.font_data.read().contains_key(font_identifier))
+                .is_some_and(|font_identifier| {
+                    self.web_fonts
+                        .read()
+                        .families
+                        .get(family_name)
+                        .is_some_and(|templates| {
+                            templates
+                                .templates
+                                .iter()
+                                .any(|template| template.borrow().identifier == font_identifier)
+                        })
+                }),
+            Source::Local(_) => true,
+        }
+    }
 }
 
 pub(crate) struct WebFontDownloadState {
@@ -617,7 +647,15 @@ impl FontContextWebFontMethods for Arc<FontContext> {
             };
 
             let rule: &FontFaceRule = lock.read_with(guard);
-            let Some(font_face) = rule.font_face() else {
+
+            // Per https://github.com/w3c/csswg-drafts/issues/1133 an @font-face rule
+            // is valid as far as the CSS parser is concerned even if it doesn’t have
+            // a font-family or src declaration.
+            // However, both are required for the rule to represent an actual font face.
+            if rule.descriptors.font_family.is_none() {
+                continue;
+            }
+            let Some(ref sources) = rule.descriptors.src else {
                 continue;
             };
 
@@ -632,7 +670,7 @@ impl FontContextWebFontMethods for Arc<FontContext> {
             number_loading += 1;
             self.start_loading_one_web_font(
                 Some(webview_id),
-                font_face.sources(),
+                sources,
                 css_font_face_descriptors,
                 WebFontLoadInitiator::Stylesheet(Box::new(initiator)),
                 document_context,
@@ -808,6 +846,9 @@ impl FontContext {
             .iter()
             .rev()
             .filter(Self::is_supported_web_font_source)
+            .filter(|source| {
+                self.is_local_or_unknown_url_font(&css_font_face_descriptors.family_name, source)
+            })
             .cloned()
             .collect();
 
@@ -946,7 +987,7 @@ impl RemoteWebFontDownloader {
 
         let request = RequestBuilder::new(
             state.webview_id,
-            url.clone().into(),
+            UrlWithBlobClaim::from_url_without_having_claimed_blob(url.clone().into()),
             Referrer::ReferrerUrl(document_context.document_url.clone()),
         )
         .destination(Destination::Font)
@@ -1063,9 +1104,7 @@ impl RemoteWebFontDownloader {
         response_message: FetchResponseMsg,
     ) -> DownloaderResponseResult {
         match response_message {
-            FetchResponseMsg::ProcessRequestBody(..) | FetchResponseMsg::ProcessRequestEOF(..) => {
-                DownloaderResponseResult::InProcess
-            },
+            FetchResponseMsg::ProcessRequestBody(..) => DownloaderResponseResult::InProcess,
             FetchResponseMsg::ProcessCspViolations(_request_id, violations) => {
                 self.state
                     .as_ref()

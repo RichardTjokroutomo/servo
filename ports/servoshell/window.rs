@@ -8,9 +8,9 @@ use std::rc::Rc;
 use euclid::Scale;
 use log::warn;
 use servo::{
-    AuthenticationRequest, ConsoleLogLevel, Cursor, DeviceIndependentIntRect,
-    DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl,
-    EmbedderControlId, GenericSender, InputEventId, InputEventResult, MediaSessionEvent,
+    AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel, Cursor,
+    DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntPoint, DeviceIntSize, DevicePixel,
+    EmbedderControl, EmbedderControlId, InputEventId, InputEventResult, MediaSessionEvent,
     PermissionRequest, RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
@@ -74,6 +74,7 @@ impl ServoShellWindow {
         self.platform_window().id()
     }
 
+    /// Must be called *after* `self` is in `state.windows`, otherwise it will panic.
     pub(crate) fn create_and_activate_toplevel_webview(
         &self,
         state: Rc<RunningAppState>,
@@ -84,6 +85,7 @@ impl ServoShellWindow {
         webview
     }
 
+    /// Must be called *after* `self` is in `state.windows`, otherwise it will panic.
     pub(crate) fn create_toplevel_webview(&self, state: Rc<RunningAppState>, url: Url) -> WebView {
         let mut webview_builder =
             WebViewBuilder::new(state.servo(), self.platform_window.rendering_context())
@@ -103,6 +105,10 @@ impl ServoShellWindow {
         let webview = webview_builder.build();
         webview.notify_theme_change(self.platform_window.theme());
         self.add_webview(webview.clone());
+        // If `self` is not in `state.windows`, our notify_accessibility_tree_update() will panic.
+        if state.accessibility_active() {
+            webview.set_accessibility_active(true);
+        }
         webview
     }
 
@@ -412,8 +418,7 @@ pub(crate) trait PlatformWindow {
     fn show_bluetooth_device_dialog(
         &self,
         _: WebViewId,
-        _devices: Vec<String>,
-        _: GenericSender<Option<String>>,
+        _request: BluetoothDeviceSelectionRequest,
     ) {
     }
     fn show_permission_dialog(&self, _: WebViewId, _: PermissionRequest) {}

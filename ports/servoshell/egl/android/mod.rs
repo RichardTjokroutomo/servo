@@ -4,8 +4,6 @@
 
 #![allow(non_snake_case)]
 
-mod resources;
-
 use std::cell::RefCell;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
@@ -23,7 +21,6 @@ use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, RawDisplayHandle, RawWindowHandle,
     WindowHandle,
 };
-use resources::ResourceReaderInstance;
 pub use servo::MediaSessionPlaybackState;
 use servo::{
     self, DevicePixel, EventLoopWaker, InputMethodControl, LoadStatus, MediaSessionActionType,
@@ -119,9 +116,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             // Show JS errors by default.
             "script::dom::bindings::error",
             // Show GL errors by default.
-            "canvas::webgl_thread",
+            "servo_canvas::webgl_thread",
             "paint::paint",
-            "constellation::constellation",
+            "servo_constellation::constellation",
         ];
         let mut filter_builder = FilterBuilder::new();
         for &module in &filters {
@@ -165,7 +162,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
     let host = Rc::new(HostCallbacks::new(callbacks_ref, &env));
 
     crate::init_crypto();
-    servo::resources::set(Box::new(ResourceReaderInstance::new()));
 
     let (opts, mut preferences, servoshell_preferences) =
         match parse_command_line_arguments(init_opts.args.as_slice()) {

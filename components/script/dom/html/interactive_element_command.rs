@@ -12,7 +12,6 @@ use script_bindings::inheritance::Castable;
 use script_bindings::root::DomRoot;
 use script_bindings::script_runtime::CanGc;
 
-use crate::dom::document::FocusInitiator;
 use crate::dom::node::{Node, NodeTraits, ShadowIncluding};
 use crate::dom::types::{
     HTMLAnchorElement, HTMLButtonElement, HTMLElement, HTMLFieldSetElement, HTMLInputElement,
@@ -183,17 +182,12 @@ impl InteractiveElementCommand {
                 option_element.SetSelected(true, can_gc)
             },
             // > The Action of the command is to run the following steps:
-            //    > 1. Run the focusing steps for the element.
-            //    > 2. Fire a click event at the element.
+            // >  1. Run the focusing steps for the element.
+            // >  2. Fire a click event at the element.
             InteractiveElementCommand::HTMLElement(html_element) => {
-                html_element.owner_document().request_focus(
-                    Some(html_element.upcast()),
-                    FocusInitiator::Script,
-                    can_gc,
-                );
-                html_element
-                    .upcast::<Node>()
-                    .fire_synthetic_pointer_event_not_trusted(atom!("click"), can_gc);
+                let node: &Node = html_element.upcast();
+                node.run_the_focusing_steps(None, can_gc);
+                node.fire_synthetic_pointer_event_not_trusted(atom!("click"), can_gc);
             },
         }
     }

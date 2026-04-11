@@ -9,22 +9,24 @@ use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use base::id::WebViewId;
 use dom_struct::dom_struct;
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
 use js::rust::{HandleObject, Stencil};
 use net_traits::http_status::HttpStatus;
-use net_traits::request::{CorsSettings, Destination, ParserMetadata, RequestBuilder, RequestId};
+use net_traits::request::{
+    CorsSettings, Destination, ParserMetadata, Referrer, RequestBuilder, RequestId,
+};
 use net_traits::{FetchMetadata, Metadata, NetworkError, ResourceFetchTiming};
+use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::str::{HTML_SPACE_CHARACTERS, StaticStringVec};
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
-use crate::document_loader::LoadType;
+use crate::document_loader::{LoadBlocker, LoadType};
 use crate::dom::attr::Attr;
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::DOMTokenListBinding::DOMTokenListMethods;
@@ -74,6 +76,9 @@ pub(crate) struct ScriptId(#[no_trace] Uuid);
 pub(crate) struct HTMLScriptElement {
     htmlelement: HTMLElement,
 
+    /// <https://html.spec.whatwg.org/multipage/#concept-script-delay-load>
+    delaying_the_load_event: DomRefCell<Option<LoadBlocker>>,
+
     /// <https://html.spec.whatwg.org/multipage/#already-started>
     already_started: Cell<bool>,
 
@@ -106,11 +111,6 @@ pub(crate) struct HTMLScriptElement {
     /// <https://html.spec.whatwg.org/multipage/#concept-script-external>
     from_an_external_file: Cell<bool>,
 
-    /// `introductionType` value to set in the `CompileOptionsWrapper`, overriding the usual
-    /// `srcScript` or `inlineScript` that this script would normally use.
-    #[no_trace]
-    introduction_type_override: Cell<Option<&'static CStr>>,
-
     /// <https://html.spec.whatwg.org/multipage/#dom-script-blocking>
     blocking: MutNullableDom<DOMTokenList>,
 
@@ -130,6 +130,7 @@ impl HTMLScriptElement {
             id: ScriptId(Uuid::new_v4()),
             htmlelement: HTMLElement::new_inherited(local_name, prefix, document),
             already_started: Cell::new(false),
+            delaying_the_load_event: Default::default(),
             parser_inserted: Cell::new(creator.is_parser_created()),
             non_blocking: Cell::new(!creator.is_parser_created()),
             parser_document: Dom::from_ref(document),
@@ -137,32 +138,94 @@ impl HTMLScriptElement {
             line_number: creator.return_line_number(),
             script_text: DomRefCell::new(DOMString::new()),
             from_an_external_file: Cell::new(false),
-            introduction_type_override: Cell::new(None),
             blocking: Default::default(),
             marked_as_render_blocking: Default::default(),
         }
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
         creator: ElementCreator,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLScriptElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLScriptElement::new_inherited(
                 local_name, prefix, document, creator,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
     pub(crate) fn get_script_id(&self) -> ScriptId {
         self.id
+    }
+
+    /// Marks that element as delaying the load event or not.
+    ///
+    /// Nothing happens if the element was already delaying the load event and
+    /// we pass true to that method again.
+    ///
+    /// <https://html.spec.whatwg.org/multipage/#concept-script-delay-load>
+    /// <https://html.spec.whatwg.org/multipage/#delaying-the-load-event-flag>
+    pub(crate) fn delay_load_event(&self, url: ServoUrl) {
+        let document = self.get_script_active_document();
+
+        let blocker = &self.delaying_the_load_event;
+        if blocker.borrow().is_none() {
+            *blocker.borrow_mut() = Some(LoadBlocker::new(&document, LoadType::Script(url)));
+        }
+    }
+
+    /// Helper method to determine the script kind based on attributes and insertion context.
+    ///
+    /// This duplicates the script preparation logic from the HTML spec to determine the
+    /// script's active document without full preparation.
+    ///
+    /// <https://html.spec.whatwg.org/multipage/#prepare-the-script-element>
+    pub(crate) fn get_script_kind(&self) -> ExternalScriptKind {
+        let element = self.upcast::<Element>();
+        let was_parser_inserted = self.parser_inserted.get();
+        let asynch = element.has_attribute(&local_name!("async"));
+        let mut script_kind = ExternalScriptKind::Asap;
+
+        match self.get_script_type() {
+            Some(ScriptType::Classic) => {
+                if element.has_attribute(&local_name!("defer")) && was_parser_inserted && !asynch {
+                    script_kind = ExternalScriptKind::Deferred
+                } else if was_parser_inserted && !asynch {
+                    script_kind = ExternalScriptKind::ParsingBlocking
+                } else if !asynch && !self.non_blocking.get() {
+                    script_kind = ExternalScriptKind::AsapInOrder
+                }
+            },
+            Some(ScriptType::Module) => {
+                if !asynch && was_parser_inserted {
+                    script_kind = ExternalScriptKind::Deferred
+                } else if !asynch && !self.non_blocking.get() {
+                    script_kind = ExternalScriptKind::AsapInOrder
+                }
+            },
+            Some(ScriptType::ImportMap) => (),
+            None => (),
+        }
+
+        script_kind
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#prepare-the-script-element>
+    pub(crate) fn get_script_active_document(&self) -> DomRoot<Document> {
+        let script_kind = self.get_script_kind();
+        match script_kind {
+            ExternalScriptKind::Asap => self.preparation_time_document.get().unwrap(),
+            ExternalScriptKind::AsapInOrder => self.preparation_time_document.get().unwrap(),
+            ExternalScriptKind::Deferred => self.parser_document.as_rooted(),
+            ExternalScriptKind::ParsingBlocking => self.parser_document.as_rooted(),
+        }
     }
 }
 
@@ -267,10 +330,9 @@ impl ScriptOrigin {
 }
 
 /// Final steps of <https://html.spec.whatwg.org/multipage/#prepare-the-script-element>
-fn finish_fetching_a_classic_script(
+pub(crate) fn finish_fetching_a_script(
     elem: &HTMLScriptElement,
     script_kind: ExternalScriptKind,
-    url: ServoUrl,
     load: ScriptResult,
     cx: &mut js::context::JSContext,
 ) {
@@ -281,15 +343,15 @@ fn finish_fetching_a_classic_script(
     match script_kind {
         ExternalScriptKind::Asap => {
             document = elem.preparation_time_document.get().unwrap();
-            document.asap_script_loaded(elem, load, CanGc::from_cx(cx))
+            document.asap_script_loaded(cx, elem, load)
         },
         ExternalScriptKind::AsapInOrder => {
             document = elem.preparation_time_document.get().unwrap();
-            document.asap_in_order_script_loaded(elem, load, CanGc::from_cx(cx))
+            document.asap_in_order_script_loaded(cx, elem, load)
         },
         ExternalScriptKind::Deferred => {
             document = elem.parser_document.as_rooted();
-            document.deferred_script_loaded(elem, load, CanGc::from_cx(cx));
+            document.deferred_script_loaded(cx, elem, load);
         },
         ExternalScriptKind::ParsingBlocking => {
             document = elem.parser_document.as_rooted();
@@ -297,7 +359,9 @@ fn finish_fetching_a_classic_script(
         },
     }
 
-    document.finish_load(LoadType::Script(url), cx);
+    // <https://html.spec.whatwg.org/multipage/#steps-to-run-when-the-result-is-ready>
+    // Step 4
+    LoadBlocker::terminate(&elem.delaying_the_load_event, cx);
 }
 
 pub(crate) type ScriptResult = Result<Script, ()>;
@@ -338,10 +402,12 @@ impl FetchResponseListener for ClassicContext {
     // TODO(KiChjang): Perhaps add custom steps to perform fetch here?
     fn process_request_body(&mut self, _: RequestId) {}
 
-    // TODO(KiChjang): Perhaps add custom steps to perform fetch here?
-    fn process_request_eof(&mut self, _: RequestId) {}
-
-    fn process_response(&mut self, _: RequestId, metadata: Result<FetchMetadata, NetworkError>) {
+    fn process_response(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        metadata: Result<FetchMetadata, NetworkError>,
+    ) {
         self.metadata = metadata.ok().map(|meta| {
             self.response_was_cors_cross_origin = meta.is_cors_cross_origin();
             match meta {
@@ -372,7 +438,12 @@ impl FetchResponseListener for ClassicContext {
         };
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, mut chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        mut chunk: Vec<u8>,
+    ) {
         if self.status.is_ok() {
             self.data.append(&mut chunk);
         }
@@ -391,16 +462,10 @@ impl FetchResponseListener for ClassicContext {
             (Err(error), _) | (_, Err(error)) => {
                 error!("Fetching classic script failed {:?}", error);
                 // Step 6, response is an error.
-                finish_fetching_a_classic_script(
-                    &self.elem.root(),
-                    self.kind,
-                    self.url.clone(),
-                    Err(()),
-                    cx,
-                );
+                finish_fetching_a_script(&self.elem.root(), self.kind, Err(()), cx);
 
                 // Resource timing is expected to be available before "error" or "load" events are fired.
-                network_listener::submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+                network_listener::submit_timing(cx, &self, &response, &timing);
                 return;
             },
             _ => {},
@@ -432,6 +497,7 @@ impl FetchResponseListener for ClassicContext {
         // Step 5.7. Let script be the result of creating a classic script given
         // sourceText, settingsObject, response's URL, options, mutedErrors, and url.
         let script = global.create_a_classic_script(
+            cx,
             source_text,
             final_url,
             self.fetch_options.clone(),
@@ -472,10 +538,10 @@ impl FetchResponseListener for ClassicContext {
             }
         } else {*/
         let load = Script::Classic(script);
-        finish_fetching_a_classic_script(&elem, self.kind, self.url.clone(), Ok(load), cx);
+        finish_fetching_a_script(&elem, self.kind, Ok(load), cx);
         // }
 
-        network_listener::submit_timing(&self, &response, &timing, CanGc::from_cx(cx));
+        network_listener::submit_timing(cx, &self, &response, &timing);
     }
 
     fn process_csp_violations(&mut self, _request_id: RequestId, violations: Vec<Violation>) {
@@ -510,6 +576,7 @@ pub(crate) fn script_fetch_request(
     url: ServoUrl,
     cors_setting: Option<CorsSettings>,
     options: ScriptFetchOptions,
+    referrer: Referrer,
 ) -> RequestBuilder {
     // We intentionally ignore options' credentials_mode member for classic scripts.
     // The mode is initialized by create_a_potential_cors_request.
@@ -519,7 +586,7 @@ pub(crate) fn script_fetch_request(
         Destination::Script,
         cors_setting,
         None,
-        options.referrer,
+        referrer,
     )
     .parser_metadata(options.parser_metadata)
     .integrity_metadata(options.integrity_metadata.clone())
@@ -539,9 +606,15 @@ fn fetch_a_classic_script(
     // Step 1, 2.
     let doc = script.owner_document();
     let global = script.global();
-    let request =
-        script_fetch_request(doc.webview_id(), url.clone(), cors_setting, options.clone())
-            .with_global_scope(&global);
+    let referrer = global.get_referrer();
+    let request = script_fetch_request(
+        doc.webview_id(),
+        url.clone(),
+        cors_setting,
+        options.clone(),
+        referrer,
+    )
+    .with_global_scope(&global);
 
     // TODO: Step 3, Add custom steps to perform fetch
 
@@ -551,12 +624,12 @@ fn fetch_a_classic_script(
         character_encoding,
         data: vec![],
         metadata: None,
-        url: url.clone(),
+        url,
         status: Ok(()),
         fetch_options: options,
         response_was_cors_cross_origin: false,
     };
-    doc.fetch(LoadType::Script(url), request, context);
+    doc.fetch_background(request, context);
 }
 
 impl HTMLScriptElement {
@@ -613,8 +686,8 @@ impl HTMLScriptElement {
         cx: &mut JSContext,
         introduction_type_override: Option<&'static CStr>,
     ) {
-        self.introduction_type_override
-            .set(introduction_type_override);
+        let introduction_type =
+            introduction_type_override.or(Some(IntroductionType::INLINE_SCRIPT));
 
         // Step 1. If el's already started is true, then return.
         if self.already_started.get() {
@@ -786,9 +859,9 @@ impl HTMLScriptElement {
             cryptographic_nonce,
             integrity_metadata: integrity_metadata.to_owned(),
             parser_metadata,
-            referrer: self.global().get_referrer(),
             referrer_policy,
             credentials_mode: module_credentials_mode,
+            render_blocking: false,
         };
 
         // Step 30. Let settings object be el's node document's relevant settings object.
@@ -796,6 +869,9 @@ impl HTMLScriptElement {
         // What we actually need is global's import map eventually.
 
         let base_url = doc.base_url();
+
+        let kind = self.get_script_kind();
+
         if let Some(src) = element.get_attribute(&local_name!("src")) {
             // Step 31. If el has a src content attribute, then:
 
@@ -835,42 +911,19 @@ impl HTMLScriptElement {
                 doc.increment_render_blocking_element_count();
             }
 
-            // TODO:
             // Step 31.8. Set el's delaying the load event to true.
+            self.delay_load_event(url.clone());
+
             // Step 31.9. If el is currently render-blocking, then set options's render-blocking to true.
+            if self.marked_as_render_blocking.get() {
+                options.render_blocking = true;
+            }
 
             // Step 31.11. Switch on el's type:
             match script_type {
                 ScriptType::Classic => {
-                    let kind = if element.has_attribute(&local_name!("defer")) &&
-                        was_parser_inserted &&
-                        !asynch
-                    {
-                        // Step 33.4: classic, has src, has defer, was parser-inserted, is not async.
-                        ExternalScriptKind::Deferred
-                    } else if was_parser_inserted && !asynch {
-                        // Step 33.5: classic, has src, was parser-inserted, is not async.
-                        ExternalScriptKind::ParsingBlocking
-                    } else if !asynch && !self.non_blocking.get() {
-                        // Step 33.3: classic, has src, is not async, is not non-blocking.
-                        ExternalScriptKind::AsapInOrder
-                    } else {
-                        // Step 33.2: classic, has src.
-                        ExternalScriptKind::Asap
-                    };
-
                     // Step 31.11. Fetch a classic script.
                     fetch_a_classic_script(self, kind, url, cors_setting, options, encoding);
-
-                    // Step 33.2/33.3/33.4/33.5, substeps 1-2. Add el to the corresponding script list.
-                    match kind {
-                        ExternalScriptKind::Deferred => doc.add_deferred_script(self),
-                        ExternalScriptKind::ParsingBlocking => {
-                            doc.set_pending_parsing_blocking_script(self, None)
-                        },
-                        ExternalScriptKind::AsapInOrder => doc.push_asap_in_order_script(self),
-                        ExternalScriptKind::Asap => doc.add_asap_script(self),
-                    }
                 },
                 ScriptType::Module => {
                     // If el does not have an integrity attribute, then set options's integrity metadata to
@@ -883,22 +936,11 @@ impl HTMLScriptElement {
 
                     // Step 31.11. Fetch an external module script graph.
                     fetch_an_external_module_script(
+                        cx,
                         url,
                         ModuleOwner::Window(Trusted::new(self)),
                         options,
-                        CanGc::from_cx(cx),
                     );
-
-                    if !asynch && was_parser_inserted {
-                        // 33.4: module, not async, parser-inserted
-                        doc.add_deferred_script(self);
-                    } else if !asynch && !self.non_blocking.get() {
-                        // 33.3: module, not parser-inserted
-                        doc.push_asap_in_order_script(self);
-                    } else {
-                        // 33.2: module, async
-                        doc.add_asap_script(self);
-                    };
                 },
                 ScriptType::ImportMap => (),
             }
@@ -915,11 +957,12 @@ impl HTMLScriptElement {
                     // Step 32.2.1 Let script be the result of creating a classic script
                     // using source text, settings object, base URL, and options.
                     let script = self.global().create_a_classic_script(
+                        cx,
                         std::borrow::Cow::Borrowed(&text.str()),
                         base_url,
                         options,
                         ErrorReporting::Unmuted,
-                        introduction_type_override.or(Some(IntroductionType::INLINE_SCRIPT)),
+                        introduction_type,
                         self.line_number as u32,
                         false,
                     );
@@ -934,29 +977,46 @@ impl HTMLScriptElement {
                         doc.set_pending_parsing_blocking_script(self, Some(result));
                     } else {
                         // Step 34.3: otherwise.
-                        self.execute(result, CanGc::from_cx(cx));
+                        self.execute(cx, result);
                     }
+                    return;
                 },
                 ScriptType::Module => {
-                    // We should add inline module script elements
-                    // into those vectors in case that there's no
-                    // descendants in the inline module script.
-                    if !asynch && was_parser_inserted {
-                        doc.add_deferred_script(self);
-                    } else if !asynch && !self.non_blocking.get() {
-                        doc.push_asap_in_order_script(self);
-                    } else {
-                        doc.add_asap_script(self);
-                    };
+                    // Just to make sure we running in the correct document incase the script has been moved
+                    let doc = self.get_script_active_document();
+
+                    // Step 32.2.2.1 Set el's delaying the load event to true.
+                    self.delay_load_event(base_url.clone());
+
+                    // Step 32.2.2.2 If el is potentially render-blocking, then:
+                    if self.potentially_render_blocking() &&
+                        doc.allows_adding_render_blocking_elements()
+                    {
+                        // Step 32.2.2.2.1 Block rendering on el.
+                        self.marked_as_render_blocking.set(true);
+                        doc.increment_render_blocking_element_count();
+
+                        // Step 32.2.2.2.2 Set options's render-blocking to true.
+                        options.render_blocking = true;
+                    }
+
+                    match kind {
+                        ExternalScriptKind::Deferred => doc.add_deferred_script(self),
+                        ExternalScriptKind::ParsingBlocking => {},
+                        ExternalScriptKind::AsapInOrder => doc.push_asap_in_order_script(self),
+                        ExternalScriptKind::Asap => doc.add_asap_script(self),
+                    }
 
                     fetch_inline_module_script(
+                        cx,
                         ModuleOwner::Window(Trusted::new(self)),
                         text_rc,
                         base_url,
                         options,
                         self.line_number as u32,
-                        CanGc::from_cx(cx),
+                        introduction_type,
                     );
+                    return;
                 },
                 ScriptType::ImportMap => {
                     // Step 32.1 Let result be the result of creating an import map
@@ -976,14 +1036,32 @@ impl HTMLScriptElement {
                     ));
 
                     // Step 34.3
-                    self.execute(Ok(script), CanGc::from_cx(cx));
+                    self.execute(cx, Ok(script));
+                    return;
                 },
             }
+        }
+
+        // Just to make sure we running in the correct document incase the script has been moved
+        let doc = self.get_script_active_document();
+
+        // Step 33.2/33.3/33.4/33.5, substeps 1-2. Add el to the corresponding script list.
+        match kind {
+            ExternalScriptKind::Deferred => doc.add_deferred_script(self),
+            ExternalScriptKind::ParsingBlocking => {
+                if Some(element.get_attribute(&local_name!("src"))).is_some() &&
+                    script_type == ScriptType::Classic
+                {
+                    doc.set_pending_parsing_blocking_script(self, None);
+                }
+            },
+            ExternalScriptKind::AsapInOrder => doc.push_asap_in_order_script(self),
+            ExternalScriptKind::Asap => doc.add_asap_script(self),
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#execute-the-script-element>
-    pub(crate) fn execute(&self, result: ScriptResult, can_gc: CanGc) {
+    pub(crate) fn execute(&self, cx: &mut JSContext, result: ScriptResult) {
         // Step 1. Let document be el's node document.
         let doc = self.owner_document();
 
@@ -994,18 +1072,14 @@ impl HTMLScriptElement {
 
         // Step 3. Unblock rendering on el.
         if self.marked_as_render_blocking.replace(false) {
+            self.marked_as_render_blocking.set(false);
             doc.decrement_render_blocking_element_count();
         }
 
         let script = match result {
             // Step 4. If el's result is null, then fire an event named error at el, and return.
             Err(_) => {
-                self.dispatch_event(
-                    atom!("error"),
-                    EventBubbles::DoesNotBubble,
-                    EventCancelable::NotCancelable,
-                    can_gc,
-                );
+                self.dispatch_event(cx, atom!("error"));
                 return;
             },
 
@@ -1041,9 +1115,9 @@ impl HTMLScriptElement {
 
                 // Step 6."classic".3. Run the classic script given by el's result.
                 _ = self.owner_window().as_global_scope().run_a_classic_script(
+                    cx,
                     script,
                     RethrowErrors::No,
-                    can_gc,
                 );
 
                 // Step 6."classic".4. Set document's currentScript attribute to oldCurrentScript.
@@ -1054,15 +1128,13 @@ impl HTMLScriptElement {
                 document.set_current_script(None);
 
                 // Step 6."module".2. Run the module script given by el's result.
-                self.owner_window().as_global_scope().run_a_module_script(
-                    module_tree,
-                    false,
-                    can_gc,
-                );
+                self.owner_window()
+                    .as_global_scope()
+                    .run_a_module_script(cx, module_tree, false);
             },
             Script::ImportMap(script) => {
                 // Step 6."importmap".1. Register an import map given el's relevant global object and el's result.
-                register_import_map(&self.owner_global(), script.import_map, can_gc);
+                register_import_map(&self.owner_global(), script.import_map, CanGc::from_cx(cx));
             },
         }
 
@@ -1074,12 +1146,7 @@ impl HTMLScriptElement {
 
         // Step 8. If el's from an external file is true, then fire an event named load at el.
         if self.from_an_external_file.get() {
-            self.dispatch_event(
-                atom!("load"),
-                EventBubbles::DoesNotBubble,
-                EventCancelable::NotCancelable,
-                can_gc,
-            );
+            self.dispatch_event(cx, atom!("load"));
         }
     }
 
@@ -1090,7 +1157,7 @@ impl HTMLScriptElement {
             .queue_simple_event(self.upcast(), atom!("error"));
     }
 
-    // https://html.spec.whatwg.org/multipage/#prepare-a-script Step 7.
+    // <https://html.spec.whatwg.org/multipage/#prepare-a-script> Step 7.
     pub(crate) fn get_script_type(&self) -> Option<ScriptType> {
         let element = self.upcast::<Element>();
 
@@ -1161,16 +1228,16 @@ impl HTMLScriptElement {
         self.non_blocking.get()
     }
 
-    fn dispatch_event(
-        &self,
-        type_: Atom,
-        bubbles: EventBubbles,
-        cancelable: EventCancelable,
-        can_gc: CanGc,
-    ) -> bool {
+    fn dispatch_event(&self, cx: &mut JSContext, type_: Atom) -> bool {
         let window = self.owner_window();
-        let event = Event::new(window.upcast(), type_, bubbles, cancelable, can_gc);
-        event.fire(self.upcast(), can_gc)
+        let event = Event::new(
+            window.upcast(),
+            type_,
+            EventBubbles::DoesNotBubble,
+            EventCancelable::NotCancelable,
+            CanGc::from_cx(cx),
+        );
+        event.fire(self.upcast(), CanGc::from_cx(cx))
     }
 
     fn text(&self) -> DOMString {
@@ -1476,7 +1543,7 @@ pub(crate) fn substitute_with_local_script(
 }
 
 #[derive(Clone, Copy)]
-enum ExternalScriptKind {
+pub(crate) enum ExternalScriptKind {
     Deferred,
     ParsingBlocking,
     AsapInOrder,

@@ -15,18 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use app_units::Au;
-use base::cross_process_instant::CrossProcessInstant;
-use base::generic_channel::{self, GenericCallback, GenericSender};
-use base::id::{BrowsingContextId, PipelineId, WebViewId};
 use base64::Engine;
-#[cfg(feature = "bluetooth")]
-use bluetooth_traits::BluetoothRequest;
-use canvas_traits::webgl::WebGLChan;
-use constellation_traits::{
-    LoadData, LoadOrigin, NavigationHistoryBehavior, ScreenshotReadinessResponse,
-    ScriptToConstellationChan, ScriptToConstellationMessage, StructuredSerializedData,
-    WindowSizeType,
-};
 use content_security_policy::Violation;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::{Sender, unbounded};
@@ -83,7 +72,17 @@ use script_bindings::root::Root;
 use script_traits::{ConstellationInputEvent, ScriptThreadMessage};
 use selectors::attr::CaseSensitivity;
 use servo_arc::Arc as ServoArc;
+use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::generic_channel::{self, GenericCallback, GenericSender};
+use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
+#[cfg(feature = "bluetooth")]
+use servo_bluetooth_traits::BluetoothRequest;
+use servo_canvas_traits::webgl::WebGLChan;
 use servo_config::pref;
+use servo_constellation_traits::{
+    LoadData, LoadOrigin, ScreenshotReadinessResponse, ScriptToConstellationChan,
+    ScriptToConstellationMessage, StructuredSerializedData, WindowSizeType,
+};
 use servo_geometry::DeviceIndependentIntRect;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
@@ -96,7 +95,7 @@ use style::str::HTML_SPACE_CHARACTERS;
 use style::stylesheets::UrlExtraData;
 use style_traits::CSSPixel;
 use stylo_atoms::Atom;
-use url::Position;
+use time::Duration as TimeDuration;
 use webrender_api::ExternalScrollId;
 use webrender_api::units::{DeviceIntSize, DevicePixel, LayoutPixel, LayoutPoint};
 
@@ -146,6 +145,7 @@ use crate::dom::css::cssstyledeclaration::{
     CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner,
 };
 use crate::dom::customelementregistry::CustomElementRegistry;
+use crate::dom::document::focus::{FocusInitiator, FocusOperation, FocusableArea};
 use crate::dom::document::{
     AnimationFrameCallback, Document, SameOriginDescendantNavigablesIterator,
 };
@@ -377,7 +377,6 @@ pub(crate) struct Window {
     test_runner: MutNullableDom<TestRunner>,
 
     /// A handle for communicating messages to the WebGL thread, if available.
-    #[ignore_malloc_size_of = "channels are hard"]
     #[no_trace]
     webgl_chan: Option<WebGLChan>,
 
@@ -429,9 +428,6 @@ pub(crate) struct Window {
     /// Indicate whether a SetDocumentStatus message has been sent after a reflow is complete.
     /// It is used to avoid sending idle message more than once, which is unnecessary.
     has_sent_idle_message: Cell<bool>,
-
-    /// Unminify Css.
-    unminify_css: bool,
 
     /// The [`UserScript`]s added via `UserContentManager`. These are potentially shared with other
     /// `WebView`s in this `ScriptThread`.
@@ -985,15 +981,15 @@ struct FontNetworkTimingHandler {
 impl NetworkTimingHandler for FontNetworkTimingHandler {
     fn submit_timing(&self, url: ServoUrl, response: ResourceFetchTiming) {
         let global = self.global.clone();
-        self.task_source.queue(task!(network_timing: move || {
+        self.task_source.queue(task!(network_timing: move |cx| {
             submit_timing(
+                cx,
                 &FontFetchListener {
                     url,
                     global
                 },
                 &Ok(()),
                 &response,
-                CanGc::note(),
             );
         }));
     }
@@ -1279,23 +1275,34 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-focus>
-    fn Focus(&self) {
-        // > 1. Let `current` be this `Window` object's browsing context.
-        // >
-        // > 2. If `current` is null, then return.
-        let current = match self.undiscarded_window_proxy() {
-            Some(proxy) => proxy,
-            None => return,
-        };
+    fn Focus(&self, cx: &mut js::context::JSContext) {
+        // Step 1. Let current be this's navigable.
+        // Note: We don't necessarily have access to the navigable, because it might
+        // be in another process.
 
-        // > 3. Run the focusing steps with `current`.
-        current.focus();
-
-        // > 4. If current is a top-level browsing context, user agents are
-        // >    encouraged to trigger some sort of notification to indicate to
-        // >    the user that the page is attempting to gain focus.
+        // Step 2. If current is null, then return.
         //
-        // TODO: Step 4
+        // Note: This is equivalent to there being an active `Document` and the WindowProxy
+        // not being discarded due to the parent <iframe> being removed from its `Document`.
+        let document = self.Document();
+        if !document.is_active() || self.undiscarded_window_proxy().is_none() {
+            return;
+        }
+
+        // Step 3. If the allow focus steps given current's active document return false, then return.
+        // TODO: Implement this.
+
+        // Step 4. Run the focusing steps with current.
+        document.focus_handler().focus(
+            FocusOperation::Focus(FocusableArea::Viewport),
+            FocusInitiator::Local,
+            CanGc::from_cx(cx),
+        );
+
+        // Step 5. If current is a top-level traversable, user agents are encouraged to trigger some
+        // sort of notification to indicate to the user that the page is attempting to gain focus.
+        //
+        // Note: We currently don't do this. Most browsers don't.
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-blur>
@@ -1419,7 +1426,8 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-history>
     fn History(&self) -> DomRoot<History> {
-        self.history.or_init(|| History::new(self, CanGc::note()))
+        self.history
+            .or_init(|| History::new(self, CanGc::deprecated_note()))
     }
 
     /// <https://w3c.github.io/IndexedDB/#factory-interface>
@@ -1430,24 +1438,66 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     /// <https://html.spec.whatwg.org/multipage/#dom-window-customelements>
     fn CustomElements(&self) -> DomRoot<CustomElementRegistry> {
         self.custom_element_registry
-            .or_init(|| CustomElementRegistry::new(self, CanGc::note()))
+            .or_init(|| CustomElementRegistry::new(self, CanGc::deprecated_note()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-location>
-    fn Location(&self) -> DomRoot<Location> {
-        self.location.or_init(|| Location::new(self, CanGc::note()))
+    fn Location(&self, cx: &mut js::context::JSContext) -> DomRoot<Location> {
+        self.location.or_init(|| Location::new(cx, self))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-sessionstorage>
-    fn SessionStorage(&self) -> DomRoot<Storage> {
-        self.session_storage
-            .or_init(|| Storage::new(self, WebStorageType::Session, CanGc::note()))
+    fn GetSessionStorage(&self, cx: &mut js::context::JSContext) -> Fallible<DomRoot<Storage>> {
+        // Step 1. If this's associated Document's session storage holder is non-null,
+        // then return this's associated Document's session storage holder.
+        if let Some(storage) = self.session_storage.get() {
+            return Ok(storage);
+        }
+
+        // Step 2. Let map be the result of running obtain a session storage bottle map
+        // with this's relevant settings object and "sessionStorage".
+        // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+        if !self.origin().is_tuple() {
+            return Err(Error::Security(Some(
+                "Cannot access sessionStorage from opaque origin.".to_string(),
+            )));
+        }
+
+        // Step 4. Let storage be a new Storage object whose map is map.
+        let storage = Storage::new(self, WebStorageType::Session, CanGc::from_cx(cx));
+
+        // Step 5. Set this's associated Document's session storage holder to storage.
+        self.session_storage.set(Some(&storage));
+
+        // Step 6. Return storage.
+        Ok(storage)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-localstorage>
-    fn LocalStorage(&self) -> DomRoot<Storage> {
-        self.local_storage
-            .or_init(|| Storage::new(self, WebStorageType::Local, CanGc::note()))
+    fn GetLocalStorage(&self, cx: &mut js::context::JSContext) -> Fallible<DomRoot<Storage>> {
+        // Step 1. If this's associated Document's local storage holder is non-null,
+        // then return this's associated Document's local storage holder.
+        if let Some(storage) = self.local_storage.get() {
+            return Ok(storage);
+        }
+
+        // Step 2. Let map be the result of running obtain a local storage bottle map
+        // with this's relevant settings object and "localStorage".
+        // Step 3. If map is failure, then throw a "SecurityError" DOMException.
+        if !self.origin().is_tuple() {
+            return Err(Error::Security(Some(
+                "Cannot access localStorage from opaque origin.".to_string(),
+            )));
+        }
+
+        // Step 4. Let storage be a new Storage object whose map is map.
+        let storage = Storage::new(self, WebStorageType::Local, CanGc::from_cx(cx));
+
+        // Step 5. Set this's associated Document's local storage holder to storage.
+        self.local_storage.set(Some(&storage));
+
+        // Step 6. Return storage.
+        Ok(storage)
     }
 
     /// <https://cookiestore.spec.whatwg.org/#Window>
@@ -1457,7 +1507,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
     /// <https://dvcs.w3.org/hg/webcrypto-api/raw-file/tip/spec/Overview.html#dfn-GlobalCrypto>
     fn Crypto(&self) -> DomRoot<Crypto> {
-        self.as_global_scope().crypto(CanGc::note())
+        self.as_global_scope().crypto(CanGc::deprecated_note())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-frameelement>
@@ -1476,7 +1526,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             .Document();
         if !current_doc
             .origin()
-            .same_origin_domain(container_doc.origin())
+            .same_origin_domain(&container_doc.origin())
         {
             return None;
         }
@@ -1493,7 +1543,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator>
     fn Navigator(&self) -> DomRoot<Navigator> {
         self.navigator
-            .or_init(|| Navigator::new(self, CanGc::note()))
+            .or_init(|| Navigator::new(self, CanGc::deprecated_note()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-clientinformation>
@@ -1662,7 +1712,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             Performance::new(
                 self.as_global_scope(),
                 self.navigation_start.get(),
-                CanGc::note(),
+                CanGc::deprecated_note(),
             )
         })
     }
@@ -1889,7 +1939,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             },
             pseudo,
             CSSModificationAccess::Readonly,
-            CanGc::note(),
+            CanGc::deprecated_note(),
         )
     }
 
@@ -2093,7 +2143,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     fn MatchMedia(&self, query: DOMString) -> DomRoot<MediaQueryList> {
         let media_query_list = MediaList::parse_media_list(&query.str(), self);
         let document = self.Document();
-        let mql = MediaQueryList::new(&document, media_query_list, CanGc::note());
+        let mql = MediaQueryList::new(&document, media_query_list, CanGc::deprecated_note());
         self.media_query_lists.track(&*mql);
         mql
     }
@@ -2121,7 +2171,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     #[cfg(feature = "bluetooth")]
     fn TestRunner(&self) -> DomRoot<TestRunner> {
         self.test_runner
-            .or_init(|| TestRunner::new(self.upcast(), CanGc::note()))
+            .or_init(|| TestRunner::new(self.upcast(), CanGc::deprecated_note()))
     }
 
     fn RunningAnimationCount(&self) -> u32 {
@@ -2154,7 +2204,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     fn GetSelection(&self) -> Option<DomRoot<Selection>> {
         self.document
             .get()
-            .and_then(|d| d.GetSelection(CanGc::note()))
+            .and_then(|d| d.GetSelection(CanGc::deprecated_note()))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-window-event>
@@ -2163,7 +2213,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             event
                 .reflector()
                 .get_jsobject()
-                .safe_to_jsval(cx, rval, CanGc::note());
+                .safe_to_jsval(cx, rval, CanGc::deprecated_note());
         }
     }
 
@@ -2255,7 +2305,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             self,
             document.upcast(),
             Box::new(WindowNamedGetter { name }),
-            CanGc::note(),
+            CanGc::deprecated_note(),
         );
         Some(NamedPropertyValue::HTMLCollection(collection))
     }
@@ -2398,7 +2448,7 @@ impl Window {
     // https://drafts.css-houdini.org/css-paint-api-1/#paint-worklet
     pub(crate) fn paint_worklet(&self) -> DomRoot<Worklet> {
         self.paint_worklet
-            .or_init(|| self.new_paint_worklet(CanGc::note()))
+            .or_init(|| self.new_paint_worklet(CanGc::deprecated_note()))
     }
 
     pub(crate) fn has_document(&self) -> bool {
@@ -2515,8 +2565,8 @@ impl Window {
         // Even though the note mention the scrollend, it is relevant to the scroll as well.
         if reflow_phases_run.contains(ReflowPhasesRun::UpdatedScrollNodeOffset) {
             match element {
-                Some(el) => self.Document().handle_element_scroll_event(el),
-                None => self.Document().handle_viewport_scroll_event(),
+                Some(element) if !scroll_id.is_root() => element.handle_scroll_event(),
+                _ => self.Document().handle_viewport_scroll_event(),
             };
         }
     }
@@ -2535,9 +2585,9 @@ impl Window {
 
     /// Prepares to tick animations and then does a reflow which also advances the
     /// layout animation clock.
-    pub(crate) fn advance_animation_clock(&self, delta_ms: i32) {
+    pub(crate) fn advance_animation_clock(&self, delta: TimeDuration) {
         self.Document()
-            .advance_animation_timeline_for_testing(delta_ms as f64 / 1000.);
+            .advance_animation_timeline_for_testing(delta);
         ScriptThread::handle_tick_all_animations_for_testing(self.pipeline_id());
     }
 
@@ -3083,56 +3133,6 @@ impl Window {
         assert!(self.document.get().is_none());
         assert!(document.window() == self);
         self.document.set(Some(document));
-
-        if self.unminify_css {
-            *self.unminified_css_dir.borrow_mut() = Some(unminified_path("unminified-css"));
-        }
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#navigate-fragid>
-    fn navigate_to_fragment(&self, url: &ServoUrl, history_handling: NavigationHistoryBehavior) {
-        let doc = self.Document();
-        // Step 1. Let navigation be navigable's active window's navigation API.
-        // TODO
-        // Step 2. Let destinationNavigationAPIState be navigable's active session history entry's navigation API state.
-        // TODO
-        // Step 3. If navigationAPIState is not null, then set destinationNavigationAPIState to navigationAPIState.
-        // TODO
-
-        // Step 4. Let continue be the result of firing a push/replace/reload navigate event
-        // at navigation with navigationType set to historyHandling, isSameDocument set to true,
-        // userInvolvement set to userInvolvement, sourceElement set to sourceElement,
-        // destinationURL set to url, and navigationAPIState set to destinationNavigationAPIState.
-        // TODO
-        // Step 5. If continue is false, then return.
-        // TODO
-
-        // Step 6. Let historyEntry be a new session history entry, with
-        // Step 7. Let entryToReplace be navigable's active session history entry if historyHandling is "replace", otherwise null.
-        // Step 8. Let history be navigable's active document's history object.
-        // Step 9. Let scriptHistoryIndex be history's index.
-        // Step 10. Let scriptHistoryLength be history's length.
-        // Step 11. If historyHandling is "push", then:
-        // Step 13. Set navigable's active session history entry to historyEntry.
-        self.send_to_constellation(ScriptToConstellationMessage::NavigatedToFragment(
-            url.clone(),
-            history_handling,
-        ));
-        // Step 12. Set navigable's active document's URL to url.
-        let old_url = doc.url();
-        doc.set_url(url.clone());
-        // Step 14. Update document for history step application given navigable's active document,
-        // historyEntry, true, scriptHistoryIndex, scriptHistoryLength, and historyHandling.
-        doc.update_document_for_history_step_application(&old_url, url);
-        // Step 15. Scroll to the fragment given navigable's active document.
-        let Some(fragment) = url.fragment() else {
-            unreachable!("Must always have a fragment");
-        };
-        doc.scroll_to_the_fragment(fragment);
-        // Step 16. Let traversable be navigable's traversable navigable.
-        // TODO
-        // Step 17. Append the following session history synchronous navigation steps involving navigable to traversable:
-        // TODO
     }
 
     pub(crate) fn load_data_for_document(
@@ -3158,106 +3158,6 @@ impl Window {
             source_document.has_trustworthy_ancestor_origin(),
             source_document.creation_sandboxing_flag_set_considering_parent_iframe(),
         )
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#navigate>
-    pub(crate) fn load_url(
-        &self,
-        history_handling: NavigationHistoryBehavior,
-        force_reload: bool,
-        load_data: LoadData,
-        can_gc: CanGc,
-    ) {
-        let doc = self.Document();
-
-        // Step 3. Let initiatorOriginSnapshot be sourceDocument's origin.
-        let initiator_origin_snapshot = &load_data.load_origin;
-
-        // TODO: Important re security. See https://github.com/servo/servo/issues/23373
-        // Step 5. check that the source browsing-context is "allowed to navigate" this window.
-
-        // Step 4 and 5
-        let pipeline_id = self.pipeline_id();
-        let window_proxy = self.window_proxy();
-        if let Some(active) = window_proxy.currently_active() {
-            if pipeline_id == active && doc.is_prompting_or_unloading() {
-                return;
-            }
-        }
-
-        // Step 23. Let unloadPromptCanceled be the result of checking if unloading
-        // is canceled for navigable's active document's inclusive descendant navigables.
-        if doc.check_if_unloading_is_cancelled(false, can_gc) {
-            // Step 12. If historyHandling is "auto", then:
-            let history_handling = if history_handling == NavigationHistoryBehavior::Auto {
-                // Step 12.1. If url equals navigable's active document's URL, and
-                // initiatorOriginSnapshot is same origin with targetNavigable's active document's
-                // origin, then set historyHandling to "replace".
-                //
-                // Note: `targetNavigable` is not actually defined in the spec, "active document" is
-                // assumed to be the correct reference based on WPT results
-                if let LoadOrigin::Script(initiator_origin) = initiator_origin_snapshot {
-                    if load_data.url == doc.url() && initiator_origin.same_origin(doc.origin()) {
-                        NavigationHistoryBehavior::Replace
-                    } else {
-                        // Step 12.2. Otherwise, set historyHandling to "push".
-                        NavigationHistoryBehavior::Push
-                    }
-                } else {
-                    // Step 12.2. Otherwise, set historyHandling to "push".
-                    NavigationHistoryBehavior::Push
-                }
-            } else {
-                history_handling
-            };
-            // Step 13. If the navigation must be a replace given url and navigable's active
-            // document, then set historyHandling to "replace".
-            //
-            // Inlines implementation of https://html.spec.whatwg.org/multipage/#the-navigation-must-be-a-replace
-            let history_handling =
-                if load_data.url.scheme() == "javascript" || doc.is_initial_about_blank() {
-                    NavigationHistoryBehavior::Replace
-                } else {
-                    history_handling
-                };
-
-            // Step 14. If all of the following are true:
-            // > documentResource is null;
-            // > response is null;
-            if !force_reload
-                // > url equals navigable's active session history entry's URL with exclude fragments set to true; and
-                && load_data.url.as_url()[..Position::AfterQuery] ==
-                    doc.url().as_url()[..Position::AfterQuery]
-                // > url's fragment is non-null,
-                && load_data.url.fragment().is_some()
-            {
-                // Step 14.1. Navigate to a fragment given navigable, url, historyHandling,
-                // userInvolvement, sourceElement, navigationAPIState, and navigationId.
-                let webdriver_sender = self.webdriver_load_status_sender.borrow().clone();
-                if let Some(ref sender) = webdriver_sender {
-                    let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-                }
-                self.navigate_to_fragment(&load_data.url, history_handling);
-                // Step 14.2. Return.
-                if let Some(sender) = webdriver_sender {
-                    let _ = sender.send(WebDriverLoadStatus::NavigationStop);
-                }
-                return;
-            }
-
-            // Step 15. If navigable's parent is non-null, then set navigable's is delaying load events to true.
-            let window_proxy = self.window_proxy();
-            if window_proxy.parent().is_some() {
-                window_proxy.start_delaying_load_events_mode();
-            }
-
-            if let Some(sender) = self.webdriver_load_status_sender.borrow().as_ref() {
-                let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-            }
-
-            // Step 13
-            ScriptThread::navigate(self.webview_id, pipeline_id, load_data, history_handling);
-        };
     }
 
     /// Handle a potential change to the [`ViewportDetails`] of this [`Window`],
@@ -3301,7 +3201,9 @@ impl Window {
         if changes.intersects(VisualViewportChanges::DimensionChanged) {
             self.has_changed_visual_viewport_dimension.set(true);
         }
-        // TODO(stevennovaryo): additionally handle the visual viewport scroll event here
+        if changes.intersects(VisualViewportChanges::OffsetChanged) {
+            visual_viewport.handle_scroll_event();
+        }
     }
 
     /// Get the theme of this [`Window`].
@@ -3409,6 +3311,12 @@ impl Window {
         sender: Option<GenericSender<WebDriverLoadStatus>>,
     ) {
         *self.webdriver_load_status_sender.borrow_mut() = sender;
+    }
+
+    pub(crate) fn webdriver_load_status_sender(
+        &self,
+    ) -> Option<GenericSender<WebDriverLoadStatus>> {
+        self.webdriver_load_status_sender.borrow().clone()
     }
 
     pub(crate) fn is_alive(&self) -> bool {
@@ -3554,6 +3462,10 @@ impl Window {
 
     pub(crate) fn set_navigation_start(&self) {
         self.navigation_start.set(CrossProcessInstant::now());
+    }
+
+    pub(crate) fn navigation_start(&self) -> CrossProcessInstant {
+        self.navigation_start.get()
     }
 
     pub(crate) fn set_last_activation_timestamp(&self, time: UserActivationTimestamp) {
@@ -3817,14 +3729,17 @@ impl Window {
             pending_image_callbacks: Default::default(),
             pending_layout_images: Default::default(),
             pending_images_for_rasterization: Default::default(),
-            unminified_css_dir: Default::default(),
+            unminified_css_dir: DomRefCell::new(if unminify_css {
+                Some(unminified_path("unminified-css"))
+            } else {
+                None
+            }),
             local_script_source,
             test_worklet: Default::default(),
             paint_worklet: Default::default(),
             exists_mut_observer: Cell::new(false),
             paint_api,
             has_sent_idle_message: Cell::new(false),
-            unminify_css,
             user_scripts,
             player_context,
             throttled: Cell::new(false),
@@ -3936,7 +3851,7 @@ impl Window {
 
             // Step 7.1.
             if let Some(ref target_origin) = target_origin {
-                if !target_origin.same_origin(document.origin()) {
+                if !target_origin.same_origin(&*document.origin()) {
                     return;
                 }
             }
@@ -3946,7 +3861,7 @@ impl Window {
             let obj = this.reflector().get_jsobject();
             let _ac = JSAutoRealm::new(*cx, obj.get());
             rooted!(in(*cx) let mut message_clone = UndefinedValue());
-            if let Ok(ports) = structuredclone::read(this.upcast(), data, message_clone.handle_mut(), CanGc::note()) {
+            if let Ok(ports) = structuredclone::read(this.upcast(), data, message_clone.handle_mut(), CanGc::deprecated_note()) {
                 // Step 7.6, 7.7
                 MessageEvent::dispatch_jsval(
                     this.upcast(),
@@ -3955,14 +3870,14 @@ impl Window {
                     Some(&source_origin.ascii_serialization()),
                     Some(&*source),
                     ports,
-                    CanGc::note()
+                    CanGc::deprecated_note()
                 );
             } else {
                 // Step 4, fire messageerror.
                 MessageEvent::dispatch_error(
                     this.upcast(),
                     this.upcast(),
-                    CanGc::note()
+                    CanGc::deprecated_note()
                 );
             }
         });

@@ -5,6 +5,8 @@
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::rust::HandleObject;
+use script_bindings::codegen::GenericBindings::ElementBinding::ScrollLogicalPosition;
+use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
 use stylo_dom::ElementState;
 
@@ -16,9 +18,11 @@ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::css::cssstyledeclaration::{
     CSSModificationAccess, CSSStyleDeclaration, CSSStyleOwner,
 };
-use crate::dom::document::{Document, FocusInitiator};
+use crate::dom::document::Document;
+use crate::dom::document::focus::{FocusInitiator, FocusOperation, FocusableArea};
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::scrolling_box::{ScrollAxisState, ScrollRequirement};
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::script_runtime::CanGc;
 
@@ -50,17 +54,17 @@ impl SVGElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         tag_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<SVGElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(SVGElement::new_inherited(tag_name, prefix, document)),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -108,7 +112,7 @@ impl SVGElementMethods<crate::DomTypeHolder> for SVGElement {
                 CSSStyleOwner::Element(Dom::from_ref(self.upcast())),
                 None,
                 CSSModificationAccess::ReadWrite,
-                CanGc::note(),
+                CanGc::deprecated_note(),
             )
         })
     }
@@ -139,15 +143,55 @@ impl SVGElementMethods<crate::DomTypeHolder> for SVGElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-focus>
-    fn Focus(&self, options: &FocusOptions) {
-        let document = self.element.owner_document();
-        document.request_focus_with_options(
-            Some(&self.element),
-            FocusInitiator::Script,
-            FocusOptions {
-                preventScroll: options.preventScroll,
-            },
-            CanGc::note(),
+    fn Focus(&self, cx: &mut js::context::JSContext, options: &FocusOptions) {
+        // 1. If the allow focus steps given this's node document return false, then return.
+        // TODO: Implement this.
+
+        // 2. Run the focusing steps for this.
+        if !self
+            .upcast::<Node>()
+            .run_the_focusing_steps(None, CanGc::from_cx(cx))
+        {
+            // The specification seems to imply we should scroll into view even if this element
+            // is not a focusable area. No browser does this, so we return early in that case.
+            // See https://github.com/whatwg/html/issues/12231.
+            return;
+        }
+
+        // > 3. If options["focusVisible"] is true, or does not exist but in an
+        // >    implementation-defined  way the user agent determines it would be best to do so,
+        // >    then indicate focus. TODO: Implement this.
+        // TODO: Implement this.
+
+        // > 4. If options["preventScroll"] is false, then scroll a target into view given this,
+        // >    "auto", "center", and "center".
+        if !options.preventScroll {
+            let scroll_axis = ScrollAxisState {
+                position: ScrollLogicalPosition::Center,
+                requirement: ScrollRequirement::IfNotVisible,
+            };
+            self.upcast::<Element>().scroll_into_view_with_options(
+                ScrollBehavior::Smooth,
+                scroll_axis,
+                scroll_axis,
+                None,
+                None,
+            );
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-blur>
+    fn Blur(&self, cx: &mut js::context::JSContext) {
+        // TODO: Run the unfocusing steps. Focus the top-level document, not
+        //       the current document.
+        if !self.as_element().focus_state() {
+            return;
+        }
+        // https://html.spec.whatwg.org/multipage/#unfocusing-steps
+        self.owner_document().focus_handler().focus(
+            FocusOperation::Focus(FocusableArea::Viewport),
+            FocusInitiator::Local,
+            CanGc::from_cx(cx),
         );
     }
 

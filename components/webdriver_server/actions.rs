@@ -6,8 +6,6 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base::generic_channel;
-use base::id::BrowsingContextId;
 use embedder_traits::{
     InputEvent, KeyboardEvent, MouseButtonAction, MouseButtonEvent, MouseMoveEvent, TouchEvent,
     TouchEventType, TouchId, WebDriverCommandMsg, WebDriverScriptCommand, WebViewPoint, WheelDelta,
@@ -17,6 +15,8 @@ use euclid::Point2D;
 use keyboard_types::webdriver::KeyInputState;
 use log::info;
 use rustc_hash::FxHashSet;
+use servo_base::generic_channel;
+use servo_base::id::BrowsingContextId;
 use webdriver::actions::{
     ActionSequence, ActionsType, GeneralAction, KeyAction, KeyActionItem, KeyDownAction,
     KeyUpAction, NullActionItem, PointerAction, PointerActionItem, PointerDownAction,
@@ -25,7 +25,10 @@ use webdriver::actions::{
 };
 use webdriver::error::{ErrorStatus, WebDriverError};
 
-use crate::{Handler, VerifyBrowsingContextIsOpen, WebElement, wait_for_oneshot_response};
+use crate::{
+    Handler, MAXIMUM_SAFE_INTEGER, VerifyBrowsingContextIsOpen, WebElement,
+    wait_for_oneshot_response,
+};
 
 /// Interval between wheelScroll and pointerMove increments in ms, based on common vsync
 static MOVESCROLL_INTERVAL: u64 = 16;
@@ -33,10 +36,6 @@ static MOVESCROLL_INTERVAL: u64 = 16;
 /// <https://w3c.github.io/webdriver/#dfn-element-click>
 /// This is hard-coded as 0 in spec.
 pub(crate) static ELEMENT_CLICK_BUTTON: u64 = 0;
-
-/// <https://262.ecma-international.org/6.0/#sec-number.max_safe_integer>
-/// 2^53 - 1
-static MAXIMUM_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 // A single action, corresponding to an `action object` in the spec.
 // In the spec, `action item` refers to a plain JSON object.

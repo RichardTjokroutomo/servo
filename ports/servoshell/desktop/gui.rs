@@ -3,6 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::fs;
+#[cfg(target_os = "windows")]
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -10,12 +14,16 @@ use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
-    Button, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, TopBottomPanel, Vec2,
-    WidgetInfo, WidgetType, pos2,
+    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback,
+    TopBottomPanel, Vec2, WidgetInfo, WidgetType, pos2,
 };
+#[cfg(target_os = "windows")]
+use egui::{FontData, FontFamily};
 use egui_glow::{CallbackFn, EguiGlow};
 use egui_winit::EventResponse;
 use euclid::{Length, Point2D, Rect, Scale, Size2D};
+#[cfg(target_os = "windows")]
+use log::info;
 use log::warn;
 use servo::{
     DeviceIndependentPixel, DevicePixel, Image, LoadStatus, OffscreenRenderingContext, PixelFormat,
@@ -59,6 +67,10 @@ pub struct Gui {
     ///
     /// These need to be cached across egui draw calls.
     favicon_textures: HashMap<WebViewId, (egui::TextureHandle, egui::load::SizedTexture)>,
+
+    /// AccessKit tree updates pending the next egui tick.
+    /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
+    pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
 }
 
 fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
@@ -68,6 +80,51 @@ fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
     } else {
         input.to_string()
     }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_fonts() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
+    let font_candidates = [
+        (r"C:\Windows\Fonts\malgun.ttf", "Malgun Gothic"), // Korean
+        (r"C:\Windows\Fonts\msyh.ttc", "Microsoft YaHei"), // Chinese + Japanese
+    ];
+
+    let mut loaded_font_names = Vec::new();
+
+    for (path_str, font_name) in font_candidates.iter() {
+        let font_path = Path::new(path_str);
+        if font_path.exists() {
+            match fs::read(font_path) {
+                Ok(bytes) => {
+                    fonts
+                        .font_data
+                        .insert(font_name.to_string(), Arc::new(FontData::from_owned(bytes)));
+                    loaded_font_names.push(font_name.to_string());
+                    info!("Loaded font: {}", font_name);
+                },
+                Err(error) => {
+                    info!("Failed to read font {}: {}", font_name, error);
+                },
+            }
+        }
+    }
+
+    if !loaded_font_names.is_empty() {
+        let proportional = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
+        for font_name in loaded_font_names.iter() {
+            proportional.insert(0, font_name.clone());
+        }
+    }
+
+    fonts
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_fonts() -> FontDefinitions {
+    // TODO: Default proportional fonts: ["Ubuntu-Light", "NotoEmoji-Regular", "emoji-icon-font"]
+    // does not support CJK. Add them for Mac/Linux.
+    FontDefinitions::default()
 }
 
 impl Drop for Gui {
@@ -98,6 +155,9 @@ impl Gui {
             false,
         );
 
+        let font_definitions = configure_fonts();
+        context.egui_ctx.set_fonts(font_definitions);
+
         context
             .egui_winit
             .init_accesskit(event_loop, winit_window, event_loop_proxy);
@@ -124,6 +184,7 @@ impl Gui {
             can_go_back: false,
             can_go_forward: false,
             favicon_textures: Default::default(),
+            pending_accesskit_updates: vec![],
         }
     }
 
@@ -472,6 +533,16 @@ impl Gui {
             // If the top parts of the GUI changed size, then update the size of the WebView and also
             // the size of its RenderingContext.
             let rect = ctx.available_rect();
+
+            // Build a graft node for each WebView.
+            for (webview_id, webview) in window.webviews() {
+                if let Some(tree_id) = webview.accesskit_tree_id() {
+                    let id = egui::Id::new(webview_id);
+                    ctx.accesskit_node_builder(id, |node| {
+                        node.set_tree_id(tree_id);
+                    });
+                }
+            }
             let size = Size2D::new(rect.width(), rect.height()) * scale;
             if let Some(webview) = window.active_webview() &&
                 size != webview.size()
@@ -509,6 +580,16 @@ impl Gui {
                 });
             }
         });
+
+        let adapter = self
+            .context
+            .egui_winit
+            .accesskit
+            .as_mut()
+            .expect("guaranteed by Gui::new()");
+        for tree_update in self.pending_accesskit_updates.drain(..) {
+            adapter.update_if_active(|| tree_update);
+        }
     }
 
     /// Paint the GUI, as of the last update.
@@ -618,8 +699,8 @@ impl Gui {
         self.context.egui_ctx.set_zoom_factor(factor);
     }
 
-    pub(crate) fn notify_accessibility_tree_update(&mut self, _tree_update: accesskit::TreeUpdate) {
-        // TODO(#41930): Forward this update to `self.context.egui_winit.accesskit`
+    pub(crate) fn notify_accessibility_tree_update(&mut self, tree_update: accesskit::TreeUpdate) {
+        self.pending_accesskit_updates.push(tree_update);
     }
 }
 

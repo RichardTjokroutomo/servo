@@ -45,19 +45,19 @@ impl HTMLDialogElement {
     }
 
     pub(crate) fn new(
+        cx: &mut js::context::JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
         proto: Option<HandleObject>,
-        can_gc: CanGc,
     ) -> DomRoot<HTMLDialogElement> {
         Node::reflect_node_with_proto(
+            cx,
             Box::new(HTMLDialogElement::new_inherited(
                 local_name, prefix, document,
             )),
             document,
             proto,
-            can_gc,
         )
     }
 
@@ -261,10 +261,10 @@ impl HTMLDialogElement {
                     DOMString::from(old_state),
                     DOMString::from(new_state),
                     source,
-                    CanGc::note(),
+                    CanGc::deprecated_note(),
                 );
                 let event = event.upcast::<Event>();
-                event.fire(this.upcast::<EventTarget>(), CanGc::note());
+                event.fire(this.upcast::<EventTarget>(), CanGc::deprecated_note());
 
                 // TODO: Step 2.2. Set element's dialog toggle task tracker to null.
             }));

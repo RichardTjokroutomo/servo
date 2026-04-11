@@ -4,7 +4,6 @@
 
 use std::str::FromStr;
 
-use base::id::WebViewId;
 use cssparser::match_ignore_ascii_case;
 use http::header::HeaderMap;
 use hyper_serde::Serde;
@@ -22,6 +21,7 @@ use net_traits::{
 };
 pub use nom_rfc8288::complete::LinkDataOwned as LinkHeader;
 use nom_rfc8288::complete::link_lenient as parse_link_header;
+use servo_base::id::WebViewId;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use strum::IntoStaticStr;
 
@@ -306,7 +306,7 @@ impl LinkProcessingOptions {
         // Step 9. Let controller be null.
         // Step 10. Let reportTiming given a Document document be to report timing for controller
         // given document's relevant global object.
-        let url = request.url.clone();
+        let url = request.url.url();
         let fetch_context = LinkFetchContext {
             url,
             link,
@@ -464,17 +464,21 @@ pub(crate) struct LinkFetchContext {
 impl FetchResponseListener for LinkFetchContext {
     fn process_request_body(&mut self, _: RequestId) {}
 
-    fn process_request_eof(&mut self, _: RequestId) {}
-
     fn process_response(
         &mut self,
+        _: &mut js::context::JSContext,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
         _ = fetch_metadata;
     }
 
-    fn process_response_chunk(&mut self, _: RequestId, mut chunk: Vec<u8>) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut js::context::JSContext,
+        _: RequestId,
+        mut chunk: Vec<u8>,
+    ) {
         if matches!(self.type_, LinkFetchContextType::Preload(..)) {
             self.response_body.append(&mut chunk);
         }
@@ -518,7 +522,7 @@ impl FetchResponseListener for LinkFetchContext {
             );
         }
 
-        submit_timing(&self, &response_result, &timing, CanGc::from_cx(cx));
+        submit_timing(cx, &self, &response_result, &timing);
 
         // Step 11.6. If processResponse is given, then call processResponse with response.
         //

@@ -18,16 +18,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
 
-use base::generic_channel::GenericSend;
-use base::id::{PipelineId, WebViewId};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use dom_struct::dom_struct;
 use js::jsapi::{GCReason, JSGCParamKey, JSTracer};
 use js::rust::wrappers2::{JS_GC, JS_GetGCParameter};
 use malloc_size_of::malloc_size_of_is_0;
+use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{Destination, RequestBuilder, RequestMode};
 use rustc_hash::FxHashMap;
+use servo_base::generic_channel::GenericSend;
+use servo_base::id::{PipelineId, WebViewId};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::thread_state::{self, ThreadState};
 use swapper::{Swapper, swapper};
@@ -688,12 +689,16 @@ impl WorkletThread {
         // TODO: Caching.
         let global = global_scope.upcast::<GlobalScope>();
         let resource_fetcher = self.global_init.resource_threads.sender();
-        let request = RequestBuilder::new(None, script_url, global.get_referrer())
-            .destination(Destination::Script)
-            .mode(RequestMode::CorsMode)
-            .credentials_mode(credentials.convert())
-            .policy_container(policy_container)
-            .origin(origin);
+        let request = RequestBuilder::new(
+            None,
+            UrlWithBlobClaim::from_url_without_having_claimed_blob(script_url),
+            global.get_referrer(),
+        )
+        .destination(Destination::Script)
+        .mode(RequestMode::CorsMode)
+        .credentials_mode(credentials.convert())
+        .policy_container(policy_container)
+        .origin(origin);
 
         let script = load_whole_resource(
             request,

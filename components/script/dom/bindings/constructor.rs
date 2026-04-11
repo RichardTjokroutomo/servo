@@ -28,17 +28,18 @@ use crate::dom::bindings::codegen::Bindings::{
     HTMLHtmlElementBinding, HTMLIFrameElementBinding, HTMLImageElementBinding,
     HTMLInputElementBinding, HTMLLIElementBinding, HTMLLabelElementBinding,
     HTMLLegendElementBinding, HTMLLinkElementBinding, HTMLMapElementBinding,
-    HTMLMenuElementBinding, HTMLMetaElementBinding, HTMLMeterElementBinding, HTMLModElementBinding,
-    HTMLOListElementBinding, HTMLObjectElementBinding, HTMLOptGroupElementBinding,
-    HTMLOptionElementBinding, HTMLOutputElementBinding, HTMLParagraphElementBinding,
-    HTMLParamElementBinding, HTMLPictureElementBinding, HTMLPreElementBinding,
-    HTMLProgressElementBinding, HTMLQuoteElementBinding, HTMLScriptElementBinding,
-    HTMLSelectElementBinding, HTMLSlotElementBinding, HTMLSourceElementBinding,
-    HTMLSpanElementBinding, HTMLStyleElementBinding, HTMLTableCaptionElementBinding,
-    HTMLTableCellElementBinding, HTMLTableColElementBinding, HTMLTableElementBinding,
-    HTMLTableRowElementBinding, HTMLTableSectionElementBinding, HTMLTemplateElementBinding,
-    HTMLTextAreaElementBinding, HTMLTimeElementBinding, HTMLTitleElementBinding,
-    HTMLTrackElementBinding, HTMLUListElementBinding, HTMLVideoElementBinding,
+    HTMLMarqueeElementBinding, HTMLMenuElementBinding, HTMLMetaElementBinding,
+    HTMLMeterElementBinding, HTMLModElementBinding, HTMLOListElementBinding,
+    HTMLObjectElementBinding, HTMLOptGroupElementBinding, HTMLOptionElementBinding,
+    HTMLOutputElementBinding, HTMLParagraphElementBinding, HTMLParamElementBinding,
+    HTMLPictureElementBinding, HTMLPreElementBinding, HTMLProgressElementBinding,
+    HTMLQuoteElementBinding, HTMLScriptElementBinding, HTMLSelectElementBinding,
+    HTMLSlotElementBinding, HTMLSourceElementBinding, HTMLSpanElementBinding,
+    HTMLStyleElementBinding, HTMLTableCaptionElementBinding, HTMLTableCellElementBinding,
+    HTMLTableColElementBinding, HTMLTableElementBinding, HTMLTableRowElementBinding,
+    HTMLTableSectionElementBinding, HTMLTemplateElementBinding, HTMLTextAreaElementBinding,
+    HTMLTimeElementBinding, HTMLTitleElementBinding, HTMLTrackElementBinding,
+    HTMLUListElementBinding, HTMLVideoElementBinding,
 };
 use crate::dom::bindings::codegen::PrototypeList;
 use crate::dom::bindings::conversions::DerivedFrom;
@@ -90,7 +91,7 @@ fn html_constructor(
         throw_dom_exception(
             cx.into(),
             global,
-            Error::Type(c"new.target must not be the active function object".to_owned()),
+            Error::Type(c"Illegal constructor.".to_owned()),
             CanGc::from_cx(cx),
         );
         return Err(());
@@ -170,15 +171,10 @@ fn html_constructor(
             // Any prototype used to create these elements will be overwritten before returning
             // from this function, so we don't bother overwriting the defaults here.
             let element = if definition.is_autonomous() {
-                DomRoot::upcast(HTMLElement::new(
-                    name.local,
-                    None,
-                    &document,
-                    None,
-                    CanGc::from_cx(cx),
-                ))
+                DomRoot::upcast(HTMLElement::new(cx, name.local, None, &document, None))
             } else {
                 create_native_html_element(
+                    cx,
                     name,
                     None,
                     &document,
@@ -343,7 +339,7 @@ fn get_constructor_object_from_local_name(
         local_name!("main") => HTMLElementBinding::GetConstructorObject,
         local_name!("map") => HTMLMapElementBinding::GetConstructorObject,
         local_name!("mark") => HTMLElementBinding::GetConstructorObject,
-        local_name!("marquee") => HTMLElementBinding::GetConstructorObject,
+        local_name!("marquee") => HTMLMarqueeElementBinding::GetConstructorObject,
         local_name!("menu") => HTMLMenuElementBinding::GetConstructorObject,
         local_name!("meta") => HTMLMetaElementBinding::GetConstructorObject,
         local_name!("meter") => HTMLMeterElementBinding::GetConstructorObject,
