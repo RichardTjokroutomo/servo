@@ -215,11 +215,12 @@ impl TextRunSegment {
         range: &Range<usize>,
         formatting_context_text: &str,
         options: &ShapingOptions,
+        is_softwrap: bool,
     ) {
         self.runs.push(
             self.info
                 .font
-                .shape_text(&formatting_context_text[range.clone()], options),
+                .shape_text(&formatting_context_text[range.clone()], options, is_softwrap),
         );
     }
 
@@ -247,8 +248,10 @@ impl TextRunSegment {
 
         let text_style = parent_style.get_inherited_text().clone();
         let can_break_anywhere = text_style.word_break == WordBreak::BreakAll ||
-            text_style.overflow_wrap == OverflowWrap::Anywhere ||
             text_style.overflow_wrap == OverflowWrap::BreakWord;
+
+        // TODO: experimental. move this later.
+        let overflow_wrap_anywhere = text_style.overflow_wrap == OverflowWrap::Anywhere;
 
         let mut last_slice = self.range.start..self.range.start;
         for break_index in linebreak_iter {
@@ -301,7 +304,8 @@ impl TextRunSegment {
             if !ends_with_whitespace &&
                 *break_index != self.range.end &&
                 text_style.word_break == WordBreak::KeepAll &&
-                !can_break_anywhere
+                !can_break_anywhere &&
+                !overflow_wrap_anywhere
             {
                 continue;
             }
@@ -311,7 +315,7 @@ impl TextRunSegment {
 
             // Push the non-whitespace part of the range.
             if !slice.is_empty() {
-                self.shape_and_push_range(&slice, formatting_context_text, &options);
+                self.shape_and_push_range(&slice, formatting_context_text, &options, true);
             }
 
             if whitespace.is_empty() {
@@ -329,10 +333,28 @@ impl TextRunSegment {
                 let start_index = whitespace.start;
                 for (index, character) in formatting_context_text[whitespace].char_indices() {
                     let index = start_index + index;
+                    
                     self.shape_and_push_range(
                         &(index..index + character.len_utf8()),
                         formatting_context_text,
                         &options,
+                        true,
+                    );
+                }
+                continue;
+            }
+
+            // TODO: experimental. tidy this later.
+            if overflow_wrap_anywhere {
+                let start_index = last_slice.end;
+                for (index, character) in word.char_indices() {
+                    let index = start_index + index;
+                    let end_of_word = index >= (last_slice.end + break_index);
+                    self.shape_and_push_range(
+                        &(index..index + character.len_utf8()),
+                        formatting_context_text,
+                        &options,
+                        end_of_word,
                     );
                 }
                 continue;
@@ -348,14 +370,16 @@ impl TextRunSegment {
                     &(whitespace.start..whitespace.end - 1),
                     formatting_context_text,
                     &options,
+                    true,
                 );
                 self.shape_and_push_range(
                     &(whitespace.end - 1..whitespace.end),
                     formatting_context_text,
                     &options,
+                    true,
                 );
             } else {
-                self.shape_and_push_range(&whitespace, formatting_context_text, &options);
+                self.shape_and_push_range(&whitespace, formatting_context_text, &options, true);
             }
         }
     }

@@ -250,6 +250,9 @@ pub struct GlyphStore {
     /// Whether or not this [`GlyphStore`] has right-to-left text, which has implications
     /// about the order of the glyphs in the store.
     is_rtl: bool,
+
+    /// TODO: add rustdoc
+    ends_with_softwrap_opportunity: bool,
 }
 
 impl GlyphStore {
@@ -271,7 +274,17 @@ impl GlyphStore {
                 .contains(ShapingFlags::ENDS_WITH_WHITESPACE_SHAPING_FLAG),
             is_single_preserved_newline: text.len() == 1 && text.starts_with('\n'),
             is_rtl: options.flags.contains(ShapingFlags::RTL_FLAG),
+            ends_with_softwrap_opportunity: false,
         }
+    }
+
+    /// experimental. move this elsewhere later.
+    pub fn set_softwrap_flag(&mut self, state: bool){
+        self.ends_with_softwrap_opportunity = state;
+    }
+
+    pub fn get_softwrap_flag(&self) -> bool {
+        self.ends_with_softwrap_opportunity
     }
 
     /// This constructor turns shaping output from HarfBuzz into a glyph run to be
