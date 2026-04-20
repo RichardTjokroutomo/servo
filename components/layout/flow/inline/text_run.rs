@@ -23,6 +23,7 @@ use style::str::char_is_whitespace;
 use style::values::computed::OverflowWrap;
 use unicode_bidi::{BidiInfo, Level};
 use unicode_script::Script;
+use style::computed_values::text_wrap_mode::T as TextWrapMode;
 
 use super::line_breaker::LineBreaker;
 use super::{InlineFormattingContextLayout, SharedInlineStyles};
@@ -296,14 +297,13 @@ impl TextRunSegment {
 
         // Determine whether we're allowed to break at any character boundary. The following conditions are:
         // 1. if `overflow_wrap: anywhere`
-        // 2. `white-space-collapse` is not `preserve`, because according to https://www.w3.org/TR/css-text-3/#white-space-property,
-        // "Lines only break at forced line breaks; content that does not fit within the block container overflows it."
-        // 3. if `white-space: break-spaces`, then we're not allowed to break anywhere.
-        // there's actually no mention of this in the CSS specs, rather this behavior is claimed by this WPT test:
-        // https://wpt.fyi/results/css/css-text/white-space/break-spaces-with-overflow-wrap-004.html
+        // 2. `text-wrap-mode: wrap`
+        // 3. `white-space-collapse: collapse`
+        //
+        // TODO(rtjkro): `white-space-collapse: collapse` is not an actual criterion. However, if `white-space-collapse` is not collapse,
+        // then with current impl, it is not considered as softwrap opportunity.
         let is_overflow_wrap_anywhere = text_style.overflow_wrap == OverflowWrap::Anywhere &&
-            text_style.white_space_collapse != WhiteSpaceCollapse::Preserve &&
-            text_style.white_space_collapse != WhiteSpaceCollapse::BreakSpaces;
+            text_style.white_space_collapse == WhiteSpaceCollapse::Collapse && text_style.text_wrap_mode == TextWrapMode::Wrap;
 
         let mut last_slice = self.byte_range.start..self.byte_range.start;
         for break_index in linebreak_iter {
@@ -411,7 +411,7 @@ impl TextRunSegment {
                         &(index..index + character.len_utf8()),
                         formatting_context_text,
                         &options,
-                        true,
+                        true, // Although this is not a linebreaking opportunity defined in UAX#14, we still set this to true.
                     );
                 }
                 continue;
