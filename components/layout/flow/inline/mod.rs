@@ -1733,6 +1733,7 @@ impl InlineFormattingContextLayout<'_> {
     /// placement boundaries, or do a line break and then commit the segment.
     fn process_soft_wrap_opportunity(&mut self) -> bool {
         if self.current_line_segment.line_items.is_empty() {
+            println!("current line segment is empty!");
             return true;
         }
         if self.text_wrap_mode == TextWrapMode::Nowrap {

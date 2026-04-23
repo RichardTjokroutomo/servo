@@ -212,6 +212,10 @@ impl TextRunSegment {
             if run.get_uax_linebreak_flag() {
                 uax_linebreak_encountered = true;
             }
+
+            if run_index == 2{
+                uax_linebreak_encountered = false;
+            }
             println!("run index: {:?}; is uax_line_break: {:?}, uax linebreak encountered: {:?}; possibly can linebreak: {:?}", run_index, run.get_uax_linebreak_flag(), uax_linebreak_encountered, (run.get_uax_linebreak_flag() ||
                     (!run.get_uax_linebreak_flag() && !uax_linebreak_encountered)));
 
@@ -268,6 +272,10 @@ impl TextRunSegment {
             println!("");
         }
 
+        // for non_uax_run in &store_non_uax_runs {
+        //             ifc.push_glyph_store_to_unbreakable_segment(non_uax_run.0.clone(), text_run, &self.info, non_uax_run.1.clone());
+        // }
+
         uax_linebreak_encountered
     }
 
@@ -278,6 +286,7 @@ impl TextRunSegment {
         options: &ShapingOptions,
         ends_with_uax_14_linebreak: bool,
     ) {
+        println!("ends_with_uax_14_linebreak: {:?}", ends_with_uax_14_linebreak);
         self.runs.push(self.info.font.shape_text(
             &formatting_context_text[range.clone()],
             options,
@@ -398,9 +407,11 @@ impl TextRunSegment {
                         // Therefore, this `GlyphStore` ends with a softwrap opportunity defined by icu (UAX#14 linebreak opportunity).
                         let mut end_of_word = prev_last_slice.end + index + character.len_utf8() >= *break_index;
                         if ends_with_whitespace {
+                            println!("ends with whitespace!");
                             end_of_word =
                             prev_last_slice.end + index + character.len_utf8() + 1 >= whitespace.start;
                         }
+                        println!("end_of_word: {:?}", end_of_word);
                         //if !end_of_word || !ends_with_whitespace {
                             self.shape_and_push_range(
                                 &(prev_last_slice.end + index..
@@ -462,6 +473,7 @@ impl TextRunSegment {
             } else {
                 self.shape_and_push_range(&whitespace, formatting_context_text, &options, true);
             }
+            println!("");
         }
     }
 }
