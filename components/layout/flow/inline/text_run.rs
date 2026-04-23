@@ -205,10 +205,15 @@ impl TextRunSegment {
         }
 
         let mut character_range_start = self.character_range.start;
+        let mut store_non_uax_runs :Vec<(Arc<GlyphStore>, Option<TextRunOffsets>)>= Vec::new();
+        println!("=================================================================");
+        println!("there are {:?} runs!", self.runs.len());
         for (run_index, run) in self.runs.iter().enumerate() {
             if run.get_uax_linebreak_flag() {
                 uax_linebreak_encountered = true;
             }
+            println!("run index: {:?}; is uax_line_break: {:?}, uax linebreak encountered: {:?}; possibly can linebreak: {:?}", run_index, run.get_uax_linebreak_flag(), uax_linebreak_encountered, (run.get_uax_linebreak_flag() ||
+                    (!run.get_uax_linebreak_flag() && !uax_linebreak_encountered)));
 
             ifc.possibly_flush_deferred_forced_line_break();
 
@@ -246,10 +251,21 @@ impl TextRunSegment {
                     (!run.get_uax_linebreak_flag() && !uax_linebreak_encountered))
             {
                 uax_linebreak_encountered &= ifc.process_soft_wrap_opportunity(); // If false is returned, then it means linebreak occurs & we're at a new line.
+                println!("uax_linebreak_encountered after soft wrap opportunity is processed: {:?}", uax_linebreak_encountered);
             }
 
-            ifc.push_glyph_store_to_unbreakable_segment(run.clone(), text_run, &self.info, offsets);
+
+            if run.get_uax_linebreak_flag(){
+                for non_uax_run in &store_non_uax_runs {
+                    ifc.push_glyph_store_to_unbreakable_segment(non_uax_run.0.clone(), text_run, &self.info, non_uax_run.1.clone());
+                }
+                ifc.push_glyph_store_to_unbreakable_segment(run.clone(), text_run, &self.info, offsets);
+                store_non_uax_runs = Vec::new();
+            } else {
+                store_non_uax_runs.push((run.clone(),  offsets));
+            }
             character_range_start = new_character_range_end;
+            println!("");
         }
 
         uax_linebreak_encountered
@@ -303,10 +319,12 @@ impl TextRunSegment {
         // TODO(rtjkro): `white-space-collapse: collapse` is not an actual criterion. However, if `white-space-collapse` is not collapse,
         // then with current impl, it is not considered as softwrap opportunity.
         let is_overflow_wrap_anywhere = text_style.overflow_wrap == OverflowWrap::Anywhere &&
-            text_style.white_space_collapse == WhiteSpaceCollapse::Collapse && text_style.text_wrap_mode == TextWrapMode::Wrap;
+             text_style.text_wrap_mode == TextWrapMode::Wrap;
 
         let mut last_slice = self.byte_range.start..self.byte_range.start;
         for break_index in linebreak_iter {
+            println!("====================================================");
+            println!("new break iter! current break index: {:?}", break_index);
             let mut options = options;
             if *break_index == self.byte_range.start {
                 self.break_at_start = true;
@@ -316,6 +334,7 @@ impl TextRunSegment {
             // Extend the slice to the next UAX#14 line break opportunity.
             let mut slice = last_slice.end..*break_index;
             let word = &formatting_context_text[slice.clone()];
+            println!("current word: {:?}", word);
 
             // Split off any trailing whitespace into a separate glyph run.
             let mut whitespace = slice.end..slice.end;
@@ -362,8 +381,9 @@ impl TextRunSegment {
             }
 
             // Only advance the last slice if we are not going to try to expand the slice.
-            let prev_last_slice = last_slice.clone();
+            let prev_last_slice = last_slice.clone(); // TODO: is this needed?
             last_slice = slice.start..*break_index;
+            println!("prev_last_slice.end: {:?}", prev_last_slice.end);
 
             // Push the non-whitespace part of the range.
             if !slice.is_empty() {
@@ -372,12 +392,16 @@ impl TextRunSegment {
                 // if there are no otherwise-acceptable break points in the line.""
                 // Therefore, if `overflow-wrap: anywhere`, shape each character individually.
                 if is_overflow_wrap_anywhere {
-                    for (index, character) in word.char_indices() {
+                    for (index, character) in formatting_context_text[slice.clone()].char_indices() {
+                        println!("current index: {:?}, character: {:?}, new offset: {:?}, current break index: {:?}", index, character, prev_last_slice.end + index + character.len_utf8(), *break_index);
                         // If true, then this is the last character in the current `word` slice.
                         // Therefore, this `GlyphStore` ends with a softwrap opportunity defined by icu (UAX#14 linebreak opportunity).
-                        let end_of_word =
-                            prev_last_slice.end + index + character.len_utf8() >= *break_index;
-                        if !end_of_word || !ends_with_whitespace {
+                        let mut end_of_word = prev_last_slice.end + index + character.len_utf8() >= *break_index;
+                        if ends_with_whitespace {
+                            end_of_word =
+                            prev_last_slice.end + index + character.len_utf8() + 1 >= whitespace.start;
+                        }
+                        //if !end_of_word || !ends_with_whitespace {
                             self.shape_and_push_range(
                                 &(prev_last_slice.end + index..
                                     prev_last_slice.end + index + character.len_utf8()),
@@ -385,7 +409,7 @@ impl TextRunSegment {
                                 &options,
                                 end_of_word,
                             );
-                        }
+                        //}
                     }
                 } else {
                     self.shape_and_push_range(&slice, formatting_context_text, &options, true);
@@ -657,6 +681,8 @@ impl TextRun {
         };
 
         let mut previous_segment_has_softwrap = false;
+        println!("==================================================================");
+        println!("there are {:?} segments!", self.shaped_text.len());
         for item in self.items.iter() {
             match item {
                 // If this whitespace forces a line break, queue up a hard line break the next time we

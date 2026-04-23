@@ -1740,10 +1740,12 @@ impl InlineFormattingContextLayout<'_> {
         }
         let mut stays_on_current_line = true;
         if !self.unbreakable_segment_fits_on_line() {
+            println!("LINE BROKEN!!!!");
             stays_on_current_line = false;
             self.process_line_break(false /* forced_line_break */);
         }
         self.commit_current_segment_to_line();
+        println!("line broken: {:?}", !stays_on_current_line);
         stays_on_current_line
     }
 
