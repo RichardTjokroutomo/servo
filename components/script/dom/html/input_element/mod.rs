@@ -44,6 +44,7 @@ use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputE
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, NodeMethods};
 use crate::dom::bindings::error::{Error, ErrorResult};
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::clipboardevent::{ClipboardEvent, ClipboardEventType};
@@ -52,6 +53,7 @@ use crate::dom::document::Document;
 use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::Event;
+use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
 use crate::dom::globalscope::GlobalScope;
@@ -156,6 +158,9 @@ pub(crate) struct HTMLInputElement {
     validity_state: MutNullableDom<ValidityState>,
     #[no_trace]
     pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
+
+    /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
+    has_scheduled_selectionchange_event: Cell<bool>,
 }
 
 #[derive(JSTraceable)]
@@ -212,6 +217,7 @@ impl HTMLInputElement {
             labels_node_list: MutNullableDom::new(None),
             validity_state: Default::default(),
             pending_webdriver_response: Default::default(),
+            has_scheduled_selectionchange_event: Default::default(),
         }
     }
 
@@ -840,10 +846,15 @@ impl HTMLInputElement {
         matches!(*self.input_type(), InputType::Color(_)) && !el.disabled_state()
     }
 
-    fn handle_key_reaction(&self, action: KeyReaction, event: &Event, can_gc: CanGc) {
+    fn handle_key_reaction(
+        &self,
+        cx: &mut js::context::JSContext,
+        action: KeyReaction,
+        event: &Event,
+    ) {
         match action {
             KeyReaction::TriggerDefaultAction => {
-                self.implicit_submission(can_gc);
+                self.implicit_submission(cx);
                 event.mark_as_handled();
             },
             KeyReaction::DispatchInput(text, is_composing, input_type) => {
@@ -892,6 +903,41 @@ impl HTMLInputElement {
 
     fn textinput_mut(&self) -> RefMut<'_, TextInput<EmbedderClipboardProvider>> {
         self.textinput.borrow_mut()
+    }
+
+    /// <https://w3c.github.io/selection-api/#dfn-schedule-a-selectionchange-event>
+    fn schedule_a_selection_change_event(&self) {
+        // Step 1. If target's has scheduled selectionchange event is true, abort these steps.
+        if self.has_scheduled_selectionchange_event.get() {
+            return;
+        }
+        // Step 2. Set target's has scheduled selectionchange event to true.
+        self.has_scheduled_selectionchange_event.set(true);
+        // Step 3. Queue a task on the user interaction task source to fire a selectionchange event on target.
+        let this = Trusted::new(self);
+        self.owner_global()
+            .task_manager()
+            .user_interaction_task_source()
+            .queue(
+                // https://w3c.github.io/selection-api/#firing-selectionchange-event
+                task!(selectionchange_task_steps: move |cx| {
+                    let this = this.root();
+                    // Step 1. Set target's has scheduled selectionchange event to false.
+                    this.has_scheduled_selectionchange_event.set(false);
+                    // Step 2. If target is an element, fire an event named selectionchange, which bubbles and not cancelable, at target.
+                    this.upcast::<EventTarget>().fire_event_with_params(
+                        atom!("selectionchange"),
+                        EventBubbles::Bubbles,
+                        EventCancelable::NotCancelable,
+                        EventComposed::Composed,
+                        CanGc::from_cx(cx),
+                    );
+                    // Step 3. Otherwise, if target is a document, fire an event named selectionchange,
+                    // which does not bubble and not cancelable, at target.
+                    //
+                    // n/a
+                }),
+            );
     }
 }
 
@@ -961,8 +1007,17 @@ impl TextControlElement for HTMLInputElement {
         let enabled = self.is_textual_or_password() && self.upcast::<Element>().focus_state();
 
         let mut shared_selection = self.shared_selection.borrow_mut();
-        if range == shared_selection.range && enabled == shared_selection.enabled {
+        let range_remained_equal = range == shared_selection.range;
+        if range_remained_equal && enabled == shared_selection.enabled {
             return;
+        }
+
+        if !range_remained_equal {
+            // https://w3c.github.io/selection-api/#selectionchange-event
+            // > When an input or textarea element provide a text selection and its selection changes
+            // > (in either extent or direction),
+            // > the user agent must schedule a selectionchange event on the element.
+            self.schedule_a_selection_change_event();
         }
 
         *shared_selection = ScriptSelection {
@@ -1760,7 +1815,7 @@ impl HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#implicit-submission>
-    fn implicit_submission(&self, can_gc: CanGc) {
+    fn implicit_submission(&self, cx: &mut js::context::JSContext) {
         let doc = self.owner_document();
         let node = doc.upcast::<Node>();
         let owner = self.form_owner();
@@ -1784,7 +1839,10 @@ impl HTMLInputElement {
                     // but we can get here from synthetic keydown events
                     button
                         .upcast::<Node>()
-                        .fire_synthetic_pointer_event_not_trusted(atom!("click"), can_gc);
+                        .fire_synthetic_pointer_event_not_trusted(
+                            atom!("click"),
+                            CanGc::from_cx(cx),
+                        );
                 }
             },
             None => {
@@ -1815,9 +1873,9 @@ impl HTMLInputElement {
                     return;
                 }
                 form.submit(
+                    cx,
                     SubmittedFrom::NotFromForm,
                     FormSubmitterElement::Form(form),
-                    can_gc,
                 );
             },
         }
@@ -2225,7 +2283,7 @@ impl VirtualMethods for HTMLInputElement {
     // Compare:
     // https://w3c.github.io/uievents/#default-action
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
-    fn handle_event(&self, event: &Event, can_gc: CanGc) {
+    fn handle_event(&self, cx: &mut JSContext, event: &Event) {
         if let Some(mouse_event) = event.downcast::<MouseEvent>() {
             self.handle_mouse_event(mouse_event);
             event.mark_as_handled();
@@ -2237,7 +2295,7 @@ impl VirtualMethods for HTMLInputElement {
                 // This can't be inlined, as holding on to textinput.borrow_mut()
                 // during self.implicit_submission will cause a panic.
                 let action = self.textinput.borrow_mut().handle_keydown(keyevent);
-                self.handle_key_reaction(action, event, can_gc);
+                self.handle_key_reaction(cx, action, event);
             }
         } else if (event.type_() == atom!("compositionstart") ||
             event.type_() == atom!("compositionupdate") ||
@@ -2250,7 +2308,7 @@ impl VirtualMethods for HTMLInputElement {
                         .textinput
                         .borrow_mut()
                         .handle_compositionend(compositionevent);
-                    self.handle_key_reaction(action, event, can_gc);
+                    self.handle_key_reaction(cx, action, event);
                     self.upcast::<Node>().dirty(NodeDamage::Other);
                     self.update_placeholder_shown_state();
                 } else if event.type_() == atom!("compositionupdate") {
@@ -2258,7 +2316,7 @@ impl VirtualMethods for HTMLInputElement {
                         .textinput
                         .borrow_mut()
                         .handle_compositionupdate(compositionevent);
-                    self.handle_key_reaction(action, event, can_gc);
+                    self.handle_key_reaction(cx, action, event);
                     self.upcast::<Node>().dirty(NodeDamage::Other);
                     self.update_placeholder_shown_state();
                 } else if event.type_() == atom!("compositionstart") {
@@ -2277,7 +2335,7 @@ impl VirtualMethods for HTMLInputElement {
                 self.owner_document().event_handler().fire_clipboard_event(
                     None,
                     ClipboardEventType::Change,
-                    can_gc,
+                    CanGc::from_cx(cx),
                 );
             }
             if flags.contains(ClipboardEventFlags::QueueInputEvent) {
@@ -2296,10 +2354,10 @@ impl VirtualMethods for HTMLInputElement {
             self.handle_focus_event(event)
         }
 
-        self.value_changed(can_gc);
+        self.value_changed(CanGc::from_cx(cx));
 
         if let Some(super_type) = self.super_type() {
-            super_type.handle_event(event, can_gc);
+            super_type.handle_event(cx, event);
         }
     }
 
@@ -2487,10 +2545,15 @@ impl Activatable for HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#input-activation-behavior>
-    fn activation_behavior(&self, event: &Event, target: &EventTarget, can_gc: CanGc) {
+    fn activation_behavior(
+        &self,
+        cx: &mut js::context::JSContext,
+        event: &Event,
+        target: &EventTarget,
+    ) {
         self.input_type()
             .as_specific()
-            .activation_behavior(self, event, target, can_gc)
+            .activation_behavior(cx, self, event, target);
     }
 }
 

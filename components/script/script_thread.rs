@@ -2237,37 +2237,23 @@ impl ScriptThread {
                 )
             },
             DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
-                self.debugger_global.fire_eval(
-                    CanGc::from_cx(cx),
-                    code.into(),
-                    id,
-                    None,
-                    frame_actor_id,
-                    reply,
-                );
+                self.debugger_global
+                    .fire_eval(cx, code.into(), id, None, frame_actor_id, reply);
             },
             DevtoolScriptControlMsg::GetPossibleBreakpoints(spidermonkey_id, result_sender) => {
                 self.debugger_global.fire_get_possible_breakpoints(
-                    CanGc::from_cx(cx),
+                    cx,
                     spidermonkey_id,
                     result_sender,
                 );
             },
             DevtoolScriptControlMsg::SetBreakpoint(spidermonkey_id, script_id, offset) => {
-                self.debugger_global.fire_set_breakpoint(
-                    CanGc::from_cx(cx),
-                    spidermonkey_id,
-                    script_id,
-                    offset,
-                );
+                self.debugger_global
+                    .fire_set_breakpoint(cx, spidermonkey_id, script_id, offset);
             },
             DevtoolScriptControlMsg::ClearBreakpoint(spidermonkey_id, script_id, offset) => {
-                self.debugger_global.fire_clear_breakpoint(
-                    CanGc::from_cx(cx),
-                    spidermonkey_id,
-                    script_id,
-                    offset,
-                );
+                self.debugger_global
+                    .fire_clear_breakpoint(cx, spidermonkey_id, script_id, offset);
             },
             DevtoolScriptControlMsg::Interrupt => {
                 self.debugger_global.fire_interrupt(CanGc::from_cx(cx));
@@ -2282,18 +2268,12 @@ impl ScriptThread {
                 );
             },
             DevtoolScriptControlMsg::GetEnvironment(frame_actor_id, result_sender) => {
-                self.debugger_global.fire_get_environment(
-                    frame_actor_id,
-                    result_sender,
-                    CanGc::from_cx(cx),
-                );
+                self.debugger_global
+                    .fire_get_environment(cx, frame_actor_id, result_sender);
             },
             DevtoolScriptControlMsg::Resume(resume_limit_type, frame_actor_id) => {
-                self.debugger_global.fire_resume(
-                    resume_limit_type,
-                    frame_actor_id,
-                    CanGc::from_cx(cx),
-                );
+                self.debugger_global
+                    .fire_resume(cx, resume_limit_type, frame_actor_id);
                 self.debugger_paused.set(false);
             },
         }
@@ -2361,11 +2341,11 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::ElementClear(element_id, reply) => {
                 webdriver_handlers::handle_element_clear(
+                    cx,
                     &documents,
                     pipeline_id,
                     element_id,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::FindElementsCSSSelector(selector, reply) => {
@@ -2387,20 +2367,20 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::FindElementsTagName(selector, reply) => {
                 webdriver_handlers::handle_find_elements_tag_name(
+                    cx,
                     &documents,
                     pipeline_id,
                     selector,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::FindElementsXpathSelector(selector, reply) => {
                 webdriver_handlers::handle_find_elements_xpath_selector(
+                    cx,
                     &documents,
                     pipeline_id,
                     selector,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::FindElementElementsCSSSelector(selector, element_id, reply) => {
@@ -2427,12 +2407,12 @@ impl ScriptThread {
             ),
             WebDriverScriptCommand::FindElementElementsTagName(selector, element_id, reply) => {
                 webdriver_handlers::handle_find_element_elements_tag_name(
+                    cx,
                     &documents,
                     pipeline_id,
                     element_id,
                     selector,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::FindElementElementsXPathSelector(
@@ -2440,12 +2420,12 @@ impl ScriptThread {
                 element_id,
                 reply,
             ) => webdriver_handlers::handle_find_element_elements_xpath_selector(
+                cx,
                 &documents,
                 pipeline_id,
                 element_id,
                 selector,
                 reply,
-                CanGc::from_cx(cx),
             ),
             WebDriverScriptCommand::FindShadowElementsCSSSelector(
                 selector,
@@ -2485,12 +2465,12 @@ impl ScriptThread {
                 shadow_root_id,
                 reply,
             ) => webdriver_handlers::handle_find_shadow_elements_xpath_selector(
+                cx,
                 &documents,
                 pipeline_id,
                 shadow_root_id,
                 selector,
                 reply,
-                CanGc::from_cx(cx),
             ),
             WebDriverScriptCommand::GetElementShadowRoot(element_id, reply) => {
                 webdriver_handlers::handle_get_element_shadow_root(
@@ -2502,11 +2482,11 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::ElementClick(element_id, reply) => {
                 webdriver_handlers::handle_element_click(
+                    cx,
                     &documents,
                     pipeline_id,
                     element_id,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::GetKnownElement(element_id, reply) => {
@@ -2579,21 +2559,15 @@ impl ScriptThread {
                 webdriver_handlers::handle_get_css(&documents, pipeline_id, node_id, name, reply)
             },
             WebDriverScriptCommand::GetElementRect(node_id, reply) => {
-                webdriver_handlers::handle_get_rect(
-                    &documents,
-                    pipeline_id,
-                    node_id,
-                    reply,
-                    CanGc::from_cx(cx),
-                )
+                webdriver_handlers::handle_get_rect(cx, &documents, pipeline_id, node_id, reply)
             },
             WebDriverScriptCommand::ScrollAndGetBoundingClientRect(node_id, reply) => {
                 webdriver_handlers::handle_scroll_and_get_bounding_client_rect(
+                    cx,
                     &documents,
                     pipeline_id,
                     node_id,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::GetElementText(node_id, reply) => {
@@ -2601,11 +2575,11 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::GetElementInViewCenterPoint(node_id, reply) => {
                 webdriver_handlers::handle_get_element_in_view_center_point(
+                    cx,
                     &documents,
                     pipeline_id,
                     node_id,
                     reply,
-                    CanGc::from_cx(cx),
                 )
             },
             WebDriverScriptCommand::GetParentFrameId(reply) => {
@@ -2619,12 +2593,9 @@ impl ScriptThread {
                     reply,
                 )
             },
-            WebDriverScriptCommand::GetUrl(reply) => webdriver_handlers::handle_get_url(
-                &documents,
-                pipeline_id,
-                reply,
-                CanGc::from_cx(cx),
-            ),
+            WebDriverScriptCommand::GetUrl(reply) => {
+                webdriver_handlers::handle_get_url(&documents, pipeline_id, reply)
+            },
             WebDriverScriptCommand::IsEnabled(element_id, reply) => {
                 webdriver_handlers::handle_is_enabled(&documents, pipeline_id, element_id, reply)
             },
@@ -2640,13 +2611,13 @@ impl ScriptThread {
                 strict_file_interactability,
                 reply,
             ) => webdriver_handlers::handle_will_send_keys(
+                cx,
                 &documents,
                 pipeline_id,
                 element_id,
                 text,
                 strict_file_interactability,
                 reply,
-                CanGc::from_cx(cx),
             ),
             WebDriverScriptCommand::AddLoadStatusSender(_, response_sender) => {
                 webdriver_handlers::handle_add_load_status_sender(
@@ -3459,13 +3430,10 @@ impl ScriptThread {
             incomplete.load_data.inherited_secure_context,
             incomplete.theme,
             self.this.clone(),
+            metadata.https_state,
         );
-        self.debugger_global.fire_add_debuggee(
-            CanGc::from_cx(cx),
-            window.upcast(),
-            incomplete.pipeline_id,
-            None,
-        );
+        self.debugger_global
+            .fire_add_debuggee(cx, window.upcast(), incomplete.pipeline_id, None);
 
         let mut realm = enter_auto_realm(cx, &*window);
         let cx = &mut realm;
@@ -3624,7 +3592,6 @@ impl ScriptThread {
             ),
         );
 
-        document.set_https_state(metadata.https_state);
         document.set_navigation_start(incomplete.navigation_start);
 
         if is_html_document == IsHTMLDocument::NonHTMLDocument {
@@ -3723,11 +3690,13 @@ impl ScriptThread {
             return;
         }
 
-        let document = self
-            .documents
-            .borrow()
-            .find_document(pipeline_id)
-            .expect("Got pipeline_id from self.documents");
+        let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
+            if active {
+                error!("Trying to set accessibility active on stale document: {pipeline_id}");
+            }
+            return;
+        };
+
         document
             .window()
             .layout()

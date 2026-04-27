@@ -69,7 +69,7 @@ use servo_geometry::{
 };
 use servo_media::ServoMedia;
 use servo_media::player::context::GlContext;
-use servo_wakelock::NoOpWakeLockProvider;
+use servo_wakelock::DefaultWakeLockDelegate;
 use storage::new_storage_threads;
 use storage_traits::StorageThreads;
 use style::global_style_data::StyleThreadPool;
@@ -930,8 +930,11 @@ impl Servo {
                 protocols.clone(),
             );
 
-        let (private_storage_threads, public_storage_threads) =
-            new_storage_threads(mem_profiler_chan.clone(), opts.config_dir.clone());
+        let (private_storage_threads, public_storage_threads) = new_storage_threads(
+            mem_profiler_chan.clone(),
+            opts.config_dir.clone(),
+            opts.temporary_storage,
+        );
 
         create_constellation(
             embedder_to_constellation_receiver,
@@ -1191,7 +1194,7 @@ fn create_constellation(
         wgpu_image_map: paint.webgpu_image_map(),
         async_runtime,
         privileged_urls,
-        wake_lock_provider: Box::new(NoOpWakeLockProvider),
+        wake_lock_provider: Box::new(DefaultWakeLockDelegate),
     };
 
     let layout_factory = Arc::new(LayoutFactoryImpl());

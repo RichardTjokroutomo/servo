@@ -42,7 +42,6 @@ use net_traits::pub_domains::is_pub_domain;
 use net_traits::request::{
     InsecureRequestsPolicy, PreloadId, PreloadKey, PreloadedResources, RequestBuilder,
 };
-use net_traits::response::HttpsState;
 use percent_encoding::percent_decode;
 use profile_traits::generic_channel as profile_generic_channel;
 use profile_traits::time::TimerMetadataFrameType;
@@ -438,9 +437,7 @@ pub(crate) struct Document {
     unload_event_start: Cell<Option<CrossProcessInstant>>,
     #[no_trace]
     unload_event_end: Cell<Option<CrossProcessInstant>>,
-    /// <https://html.spec.whatwg.org/multipage/#concept-document-https-state>
-    #[no_trace]
-    https_state: Cell<HttpsState>,
+
     /// The document's origin.
     #[no_trace]
     origin: DomRefCell<MutableOrigin>,
@@ -710,14 +707,16 @@ impl Document {
                 self.root_removal_noted.set(false);
 
                 if let Some(dirty_root) = self.dirty_root.get() {
-                    // There was an existing dirty root so we mark its
-                    // ancestors as dirty until the document element.
-                    for ancestor in dirty_root
-                        .upcast::<Node>()
-                        .inclusive_ancestors_in_flat_tree()
-                    {
-                        if ancestor.is::<Element>() {
-                            ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
+                    if dirty_root.is_connected() {
+                        // There was an existing dirty root so we mark its
+                        // ancestors as dirty until the document element.
+                        for ancestor in dirty_root
+                            .upcast::<Node>()
+                            .inclusive_ancestors_in_flat_tree()
+                        {
+                            if ancestor.is::<Element>() {
+                                ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
+                            }
                         }
                     }
                 }
@@ -842,10 +841,6 @@ impl Document {
         self.content_type.matches(APPLICATION, "xhtml+xml")
     }
 
-    pub(crate) fn set_https_state(&self, https_state: HttpsState) {
-        self.https_state.set(https_state);
-    }
-
     pub(crate) fn is_fully_active(&self) -> bool {
         self.activity.get() == DocumentActivity::FullyActive
     }
@@ -896,7 +891,7 @@ impl Document {
         self.owner_global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(fire_pageshow_event: move || {
+            .queue(task!(fire_pageshow_event: move |cx| {
                 let document = document.root();
                 let window = document.window();
                 // Step 4.6.1
@@ -906,7 +901,7 @@ impl Document {
                 // Step 4.6.2 Set document's page showing flag to true.
                 document.page_showing.set(true);
                 // Step 4.6.3 Update the visibility state of document to "visible".
-                document.update_visibility_state(DocumentVisibilityState::Visible, CanGc::deprecated_note());
+                document.update_visibility_state(DocumentVisibilityState::Visible, CanGc::from_cx(cx));
                 // Step 4.6.4 Fire a page transition event named pageshow at document's relevant
                 // global object with true.
                 let event = PageTransitionEvent::new(
@@ -915,11 +910,11 @@ impl Document {
                     false, // bubbles
                     false, // cancelable
                     true, // persisted
-                    CanGc::deprecated_note(),
+                    CanGc::from_cx(cx),
                 );
                 let event = event.upcast::<Event>();
                 event.set_trusted(true);
-                window.dispatch_event_with_target_override(event, CanGc::deprecated_note());
+                window.dispatch_event_with_target_override(event, CanGc::from_cx(cx));
             }))
     }
 
@@ -1920,7 +1915,7 @@ impl Document {
             self.owner_global()
                 .task_manager()
                 .dom_manipulation_task_source()
-                .queue(task!(hashchange_event: move || {
+                .queue(task!(hashchange_event: move |cx| {
                         let window = window.root();
                         HashChangeEvent::new(
                             &window,
@@ -1929,10 +1924,10 @@ impl Document {
                             false,
                             old_url,
                             new_url,
-                            CanGc::deprecated_note(),
+                            CanGc::from_cx(cx),
                         )
                         .upcast::<Event>()
-                        .fire(window.upcast(), CanGc::deprecated_note());
+                        .fire(window.upcast(), CanGc::from_cx(cx));
                 }));
         }
     }
@@ -2203,7 +2198,7 @@ impl Document {
         self.owner_global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(fire_load_event: move || {
+            .queue(task!(fire_load_event: move |cx| {
                 let document = document.root();
                 // Step 9.3. Let window be the Document's relevant global object.
                 let window = document.window();
@@ -2212,7 +2207,7 @@ impl Document {
                 }
 
                 // Step 9.1. Update the current document readiness to "complete".
-                document.set_ready_state(DocumentReadyState::Complete, CanGc::deprecated_note());
+                document.set_ready_state(DocumentReadyState::Complete, CanGc::from_cx(cx));
 
                 // Step 9.2. If the Document object's browsing context is null, then abort these steps.
                 if document.browsing_context().is_none() {
@@ -2228,11 +2223,11 @@ impl Document {
                     atom!("load"),
                     EventBubbles::DoesNotBubble,
                     EventCancelable::NotCancelable,
-                    CanGc::deprecated_note(),
+                    CanGc::from_cx(cx),
                 );
                 load_event.set_trusted(true);
                 debug!("About to dispatch load for {:?}", document.url());
-                window.dispatch_event_with_target_override(&load_event, CanGc::deprecated_note());
+                window.dispatch_event_with_target_override(&load_event, CanGc::from_cx(cx));
 
                 // Step 9.6. Invoke WebDriver BiDi load complete with the Document's browsing context,
                 // and a new WebDriver BiDi navigation status whose id is the Document object's during-loading navigation ID
@@ -2258,11 +2253,11 @@ impl Document {
                     false, // bubbles
                     false, // cancelable
                     false, // persisted
-                    CanGc::deprecated_note(),
+                    CanGc::from_cx(cx),
                 );
                 let page_show_event = page_show_event.upcast::<Event>();
                 page_show_event.set_trusted(true);
-                page_show_event.fire(window.upcast(), CanGc::deprecated_note());
+                page_show_event.fire(window.upcast(), CanGc::from_cx(cx));
 
                 // Step 9.12. Completely finish loading the Document.
                 document.completely_finish_loading();
@@ -2271,7 +2266,7 @@ impl Document {
                 // TODO
 
                 if let Some(fragment) = document.url().fragment() {
-                    document.scroll_to_the_fragment(fragment, CanGc::deprecated_note());
+                    document.scroll_to_the_fragment(fragment, CanGc::from_cx(cx));
                 }
             }));
 
@@ -2455,7 +2450,7 @@ impl Document {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(
-                task!(fire_dom_content_loaded_event: move || {
+                task!(fire_dom_content_loaded_event: move |cx| {
                 let document = document.root();
 
                 // Step 6.1 Set the Document's load timing info's DOM content loaded event start time
@@ -2464,7 +2459,7 @@ impl Document {
 
                 // Step 6.2 Fire an event named DOMContentLoaded at the Document object, with its bubbles
                 // attribute initialized to true.
-                document.upcast::<EventTarget>().fire_bubbling_event(atom!("DOMContentLoaded"), CanGc::deprecated_note());
+                document.upcast::<EventTarget>().fire_bubbling_event(atom!("DOMContentLoaded"), CanGc::from_cx(cx));
 
                 // Step 6.3 Set the Document's load timing info's DOM content loaded event end time to the current
                 // high resolution time given the Document's relevant global object.
@@ -3208,8 +3203,8 @@ impl Document {
         self.owner_global()
             .task_manager()
             .intersection_observer_task_source()
-            .queue(task!(notify_intersection_observers: move || {
-                document.root().notify_intersection_observers(CanGc::deprecated_note());
+            .queue(task!(notify_intersection_observers: move |cx| {
+                document.root().notify_intersection_observers(CanGc::from_cx(cx));
             }));
     }
 
@@ -3590,7 +3585,6 @@ impl Document {
             load_event_end: Cell::new(Default::default()),
             unload_event_start: Cell::new(Default::default()),
             unload_event_end: Cell::new(Default::default()),
-            https_state: Cell::new(HttpsState::None),
             origin: DomRefCell::new(origin),
             referrer,
             target_element: MutNullableDom::new(None),
@@ -3720,19 +3714,17 @@ impl Document {
             .set(self.script_and_layout_blockers.get() + 1);
     }
 
-    #[expect(unsafe_code)]
     /// Terminate the period in which JS or layout is disallowed from running.
     /// If no further blockers remain, any delayed tasks in the queue will
     /// be executed in queue order until the queue is empty.
-    pub(crate) fn remove_script_and_layout_blocker(&self) {
+    pub(crate) fn remove_script_and_layout_blocker(&self, cx: &mut js::context::JSContext) {
         assert!(self.script_and_layout_blockers.get() > 0);
         self.script_and_layout_blockers
             .set(self.script_and_layout_blockers.get() - 1);
         while self.script_and_layout_blockers.get() == 0 && !self.delayed_tasks.borrow().is_empty()
         {
             let task = self.delayed_tasks.borrow_mut().remove(0);
-            let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
-            task.run_box(&mut cx);
+            task.run_box(cx);
         }
     }
 

@@ -525,7 +525,7 @@ impl HTMLSelectElement {
         self.owner_global()
             .task_manager()
             .user_interaction_task_source()
-            .queue(task!(send_select_update_notification: move || {
+            .queue(task!(send_select_update_notification: move |cx| {
                 let this = this.root();
 
                 // TODO: Step 1. Set the select element's user validity to true.
@@ -538,13 +538,13 @@ impl HTMLSelectElement {
                         EventBubbles::Bubbles,
                         EventCancelable::NotCancelable,
                         EventComposed::Composed,
-                        CanGc::deprecated_note(),
+                        CanGc::from_cx(cx),
                     );
 
                 // Step 3. Fire an event named change at the select element, with the bubbles attribute initialized
                 // to true.
                 this.upcast::<EventTarget>()
-                    .fire_bubbling_event(atom!("change"), CanGc::deprecated_note());
+                    .fire_bubbling_event(atom!("change"), CanGc::from_cx(cx));
             }));
     }
 
@@ -904,8 +904,8 @@ impl VirtualMethods for HTMLSelectElement {
         }
     }
 
-    fn handle_event(&self, event: &Event, can_gc: CanGc) {
-        self.super_type().unwrap().handle_event(event, can_gc);
+    fn handle_event(&self, cx: &mut js::context::JSContext, event: &Event) {
+        self.super_type().unwrap().handle_event(cx, event);
         if let Some(event) = event.downcast::<FocusEvent>() {
             if *event.upcast::<Event>().type_() != *"blur" {
                 self.owner_document()
@@ -976,7 +976,12 @@ impl Activatable for HTMLSelectElement {
         !self.upcast::<Element>().disabled_state()
     }
 
-    fn activation_behavior(&self, event: &Event, _target: &EventTarget, _can_gc: CanGc) {
+    fn activation_behavior(
+        &self,
+        _cx: &mut js::context::JSContext,
+        event: &Event,
+        _target: &EventTarget,
+    ) {
         if !event.IsTrusted() {
             return;
         }

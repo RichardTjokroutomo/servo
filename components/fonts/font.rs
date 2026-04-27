@@ -415,13 +415,20 @@ impl ShapingOptions {
 struct ShapeCacheEntry {
     text: String,
     options: ShapingOptions,
+    ends_with_uax_14_linebreak: bool,
 }
 
 impl Font {
-    pub fn shape_text(&self, text: &str, options: &ShapingOptions) -> Arc<GlyphStore> {
+    pub fn shape_text(
+        &self,
+        text: &str,
+        options: &ShapingOptions,
+        ends_with_uax_14_linebreak: bool,
+    ) -> Arc<GlyphStore> {
         let lookup_key = ShapeCacheEntry {
             text: text.to_owned(),
             options: *options,
+            ends_with_uax_14_linebreak,
         };
         {
             let cache = self.cached_shape_data.read();
@@ -431,7 +438,7 @@ impl Font {
         }
 
         let start_time = Instant::now();
-        let glyphs = if self.can_do_fast_shaping(text, options) {
+        let mut glyphs = if self.can_do_fast_shaping(text, options) {
             debug!("shape_text: Using ASCII fast path.");
             self.shape_text_fast(text, options)
         } else {
@@ -440,6 +447,7 @@ impl Font {
                 .get_or_init(|| Shaper::new(self))
                 .shape_text(self, text, options)
         };
+        glyphs.set_uax_linebreak_flag(ends_with_uax_14_linebreak);
 
         let shaped_text = Arc::new(glyphs);
         let mut cache = self.cached_shape_data.write();

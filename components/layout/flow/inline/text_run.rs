@@ -16,6 +16,7 @@ use servo_arc::Arc as ServoArc;
 use servo_base::text::is_bidi_control;
 use style::Zero;
 use style::computed_values::text_rendering::T as TextRendering;
+use style::computed_values::text_wrap_mode::T as TextWrapMode;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::computed_values::word_break::T as WordBreak;
 use style::properties::ComputedValues;
@@ -188,12 +189,16 @@ impl TextRunSegment {
         self.byte_range.end = next_byte_index;
     }
 
+    /// This function is part of the second phase of inline layout, the box node to line item conversion.
+    /// Returns a boolean value that tells the caller whether an `icu` declared softwrap opportunity is encountered in this `TextRunSegment`.
     fn layout_into_line_items(
         &self,
         text_run: &TextRun,
         mut soft_wrap_policy: SegmentStartSoftWrapPolicy,
         ifc: &mut InlineFormattingContextLayout,
-    ) {
+        previous_segment_has_uax_14_linebreak_opportunity: bool,
+    ) -> bool {
+        let mut uax_linebreak_encountered = previous_segment_has_uax_14_linebreak_opportunity;
         if self.break_at_start && soft_wrap_policy == SegmentStartSoftWrapPolicy::FollowLinebreaker
         {
             soft_wrap_policy = SegmentStartSoftWrapPolicy::Force;
@@ -201,6 +206,17 @@ impl TextRunSegment {
 
         let mut character_range_start = self.character_range.start;
         for (run_index, run) in self.runs.iter().enumerate() {
+            let run_ends_with_uax_linebreak = run.get_uax_linebreak_flag();
+            if run_ends_with_uax_linebreak {
+                uax_linebreak_encountered = true;
+            }
+
+            // This variable is used to check whether we can process softwrap opportunity
+            // & push glyph store to current line segment during current iteration or not.
+            // The actual logic is as follows:
+            // (run_ends_with_uax_linebreak || (!run_ends_with_uax_linebreak && !uax_linebreak_encountered))
+            let linebreaker_predicate = run_ends_with_uax_linebreak || !uax_linebreak_encountered;
+
             ifc.possibly_flush_deferred_forced_line_break();
 
             let new_character_range_end = character_range_start + run.character_count();
@@ -215,13 +231,32 @@ impl TextRunSegment {
 
             // Break before each unbreakable run in this TextRun, except the first unless the
             // linebreaker was set to break before the first run.
-            if run_index != 0 || soft_wrap_policy == SegmentStartSoftWrapPolicy::Force {
-                ifc.process_soft_wrap_opportunity();
+            //
+            // Additionally, if this `GlyphStore` doesn't end with a softwrap opportunity determined by `icu` (UAX#14 linebreak opportunity),
+            // check if a softwrap opportunity determined by `icu` has been encountered in this line before. If so, then
+            // there is a proper softwrap opportunity in the line. In this case, forbid linebreak.
+            if (run_index != 0 || soft_wrap_policy == SegmentStartSoftWrapPolicy::Force) &&
+                linebreaker_predicate
+            {
+                uax_linebreak_encountered &= ifc.process_soft_wrap_opportunity(); // If false is returned, then it means linebreak occurs & we're at a new line.
             }
 
-            ifc.push_glyph_store_to_unbreakable_segment(run.clone(), text_run, &self.info, offsets);
+            if linebreaker_predicate {
+                ifc.push_uncommited_glyph_stores_to_current_line_segment(text_run, &self.info);
+                ifc.push_glyph_store_to_unbreakable_segment(
+                    run.clone(),
+                    text_run,
+                    &self.info,
+                    offsets,
+                );
+            } else {
+                ifc.uncommited_glyph_stores
+                    .push((run.clone(), offsets.clone()));
+            }
             character_range_start = new_character_range_end;
         }
+
+        uax_linebreak_encountered
     }
 
     fn shape_and_push_range(
@@ -229,12 +264,13 @@ impl TextRunSegment {
         range: &Range<usize>,
         formatting_context_text: &str,
         options: &ShapingOptions,
+        ends_with_uax_14_linebreak: bool,
     ) {
-        self.runs.push(
-            self.info
-                .font
-                .shape_text(&formatting_context_text[range.clone()], options),
-        );
+        self.runs.push(self.info.font.shape_text(
+            &formatting_context_text[range.clone()],
+            options,
+            ends_with_uax_14_linebreak,
+        ));
     }
 
     /// Shape the text of this [`TextRunSegment`], first finding "words" for the shaper by processing
@@ -254,15 +290,19 @@ impl TextRunSegment {
         let range = self.byte_range.clone();
         let linebreaks = linebreaker.advance_to_linebreaks_in_range(self.byte_range.clone());
         let linebreak_iter = linebreaks.iter().chain(std::iter::once(&range.end));
-
         self.runs.clear();
         self.runs.reserve(linebreaks.len());
         self.break_at_start = false;
 
         let text_style = parent_style.get_inherited_text().clone();
         let can_break_anywhere = text_style.word_break == WordBreak::BreakAll ||
-            text_style.overflow_wrap == OverflowWrap::Anywhere ||
             text_style.overflow_wrap == OverflowWrap::BreakWord;
+
+        // Determine whether we're allowed to break at any character boundary. The following conditions are:
+        // 1. if `overflow_wrap: anywhere`
+        // 2. `text-wrap-mode: wrap`
+        let is_overflow_wrap_anywhere = text_style.overflow_wrap == OverflowWrap::Anywhere &&
+            text_style.text_wrap_mode == TextWrapMode::Wrap;
 
         let mut last_slice = self.byte_range.start..self.byte_range.start;
         for break_index in linebreak_iter {
@@ -278,12 +318,9 @@ impl TextRunSegment {
 
             // Split off any trailing whitespace into a separate glyph run.
             let mut whitespace = slice.end..slice.end;
-            let mut rev_char_indices = word.char_indices().rev().peekable();
+            let rev_char_indices = word.char_indices().rev().peekable();
 
             let mut ends_with_whitespace = false;
-            let ends_with_newline = rev_char_indices
-                .peek()
-                .is_some_and(|&(_, character)| character == '\n');
             if let Some((first_white_space_index, first_white_space_character)) = rev_char_indices
                 .take_while(|&(_, character)| char_is_whitespace(character))
                 .last()
@@ -291,15 +328,14 @@ impl TextRunSegment {
                 ends_with_whitespace = true;
                 whitespace.start = slice.start + first_white_space_index;
 
-                // If line breaking for a piece of text that has `white-space-collapse: break-spaces` there
-                // is a line break opportunity *after* every preserved space, but not before. This means
-                // that we should not split off the first whitespace, unless that white-space is a preserved
-                // newline.
+                // If line breaking for a piece of text that has `white-space-collapse:
+                // break-spaces` there is a line break opportunity *after* every preserved space,
+                // but not before. This means that we should not split off the first whitespace.
                 //
                 // An exception to this is if the style tells us that we can break in the middle of words.
                 if text_style.white_space_collapse == WhiteSpaceCollapse::BreakSpaces &&
-                    first_white_space_character != '\n' &&
-                    !can_break_anywhere
+                    !can_break_anywhere &&
+                    !is_overflow_wrap_anywhere
                 {
                     whitespace.start += first_white_space_character.len_utf8();
                     options
@@ -315,7 +351,8 @@ impl TextRunSegment {
             if !ends_with_whitespace &&
                 *break_index != self.byte_range.end &&
                 text_style.word_break == WordBreak::KeepAll &&
-                !can_break_anywhere
+                !can_break_anywhere &&
+                !is_overflow_wrap_anywhere
             {
                 continue;
             }
@@ -325,7 +362,32 @@ impl TextRunSegment {
 
             // Push the non-whitespace part of the range.
             if !slice.is_empty() {
-                self.shape_and_push_range(&slice, formatting_context_text, &options);
+                // According to https://drafts.csswg.org/css-text-3/#valdef-overflow-wrap-anywhere,
+                // "An otherwise unbreakable sequence of characters may be broken at an arbitrary point
+                // if there are no otherwise-acceptable break points in the line.""
+                // Therefore, if `overflow-wrap: anywhere`, shape each character individually.
+                if is_overflow_wrap_anywhere {
+                    let sub_word = &formatting_context_text[slice.clone()];
+                    for (index, character) in sub_word.char_indices() {
+                        // If true, then this is the last character in the current `word` slice.
+                        // Therefore, this `GlyphStore` ends with a softwrap opportunity defined by icu (UAX#14 linebreak opportunity).
+                        let mut end_of_word =
+                            slice.start + index + character.len_utf8() >= *break_index;
+
+                        if ends_with_whitespace {
+                            end_of_word =
+                                slice.start + index + character.len_utf8() + 1 >= slice.end;
+                        }
+                        self.shape_and_push_range(
+                            &(slice.start + index..slice.start + index + character.len_utf8()),
+                            formatting_context_text,
+                            &options,
+                            end_of_word,
+                        );
+                    }
+                } else {
+                    self.shape_and_push_range(&slice, formatting_context_text, &options, true);
+                }
             }
 
             if whitespace.is_empty() {
@@ -347,30 +409,13 @@ impl TextRunSegment {
                         &(index..index + character.len_utf8()),
                         formatting_context_text,
                         &options,
+                        true, // Although this is not a linebreaking opportunity defined in UAX#14, we still set this to true.
                     );
                 }
                 continue;
             }
 
-            // The breaker breaks after every newline, so either there is none,
-            // or there is exactly one at the very end. In the latter case,
-            // split it into a different run. That's because shaping considers
-            // a newline to have the same advance as a space, but during layout
-            // we want to treat the newline as having no advance.
-            if ends_with_newline && whitespace.len() > 1 {
-                self.shape_and_push_range(
-                    &(whitespace.start..whitespace.end - 1),
-                    formatting_context_text,
-                    &options,
-                );
-                self.shape_and_push_range(
-                    &(whitespace.end - 1..whitespace.end),
-                    formatting_context_text,
-                    &options,
-                );
-            } else {
-                self.shape_and_push_range(&whitespace, formatting_context_text, &options);
-            }
+            self.shape_and_push_range(&whitespace, formatting_context_text, &options, true);
         }
     }
 }
@@ -579,6 +624,7 @@ impl TextRun {
             false => SegmentStartSoftWrapPolicy::FollowLinebreaker,
         };
 
+        let mut previous_segment_has_uax_14_linebreak = false;
         for item in self.items.iter() {
             match item {
                 // If this whitespace forces a line break, queue up a hard line break the next time we
@@ -589,7 +635,12 @@ impl TextRun {
                     ifc.defer_forced_line_break_at_character_offset(*character_index);
                 },
                 TextRunItem::TextSegment(segment) => {
-                    segment.layout_into_line_items(self, soft_wrap_policy, ifc)
+                    previous_segment_has_uax_14_linebreak = segment.layout_into_line_items(
+                        self,
+                        soft_wrap_policy,
+                        ifc,
+                        previous_segment_has_uax_14_linebreak,
+                    );
                 },
             }
             soft_wrap_policy = SegmentStartSoftWrapPolicy::FollowLinebreaker;
