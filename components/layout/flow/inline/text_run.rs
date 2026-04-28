@@ -206,7 +206,7 @@ impl TextRunSegment {
 
         let mut character_range_start = self.character_range.start;
         for (run_index, run) in self.runs.iter().enumerate() {
-            let run_ends_with_uax_linebreak = run.get_uax_linebreak_flag();
+            let run_ends_with_uax_linebreak = run.ends_with_uax_14_linebreak;
             if run_ends_with_uax_linebreak {
                 uax_linebreak_encountered = true;
             }
@@ -296,13 +296,9 @@ impl TextRunSegment {
 
         let text_style = parent_style.get_inherited_text().clone();
         let can_break_anywhere = text_style.word_break == WordBreak::BreakAll ||
-            text_style.overflow_wrap == OverflowWrap::BreakWord;
-
-        // Determine whether we're allowed to break at any character boundary. The following conditions are:
-        // 1. if `overflow_wrap: anywhere`
-        // 2. `text-wrap-mode: wrap`
-        let is_overflow_wrap_anywhere = text_style.overflow_wrap == OverflowWrap::Anywhere &&
-            text_style.text_wrap_mode == TextWrapMode::Wrap;
+            ((text_style.overflow_wrap == OverflowWrap::BreakWord ||
+                text_style.overflow_wrap == OverflowWrap::Anywhere) &&
+                text_style.text_wrap_mode == TextWrapMode::Wrap);
 
         let mut last_slice = self.byte_range.start..self.byte_range.start;
         for break_index in linebreak_iter {
@@ -334,8 +330,7 @@ impl TextRunSegment {
                 //
                 // An exception to this is if the style tells us that we can break in the middle of words.
                 if text_style.white_space_collapse == WhiteSpaceCollapse::BreakSpaces &&
-                    !can_break_anywhere &&
-                    !is_overflow_wrap_anywhere
+                    !can_break_anywhere
                 {
                     whitespace.start += first_white_space_character.len_utf8();
                     options
@@ -351,8 +346,7 @@ impl TextRunSegment {
             if !ends_with_whitespace &&
                 *break_index != self.byte_range.end &&
                 text_style.word_break == WordBreak::KeepAll &&
-                !can_break_anywhere &&
-                !is_overflow_wrap_anywhere
+                !can_break_anywhere
             {
                 continue;
             }
@@ -366,7 +360,7 @@ impl TextRunSegment {
                 // "An otherwise unbreakable sequence of characters may be broken at an arbitrary point
                 // if there are no otherwise-acceptable break points in the line.""
                 // Therefore, if `overflow-wrap: anywhere`, shape each character individually.
-                if is_overflow_wrap_anywhere {
+                if can_break_anywhere {
                     let sub_word = &formatting_context_text[slice.clone()];
                     for (index, character) in sub_word.char_indices() {
                         // If true, then this is the last character in the current `word` slice.

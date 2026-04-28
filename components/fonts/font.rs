@@ -447,7 +447,7 @@ impl Font {
                 .get_or_init(|| Shaper::new(self))
                 .shape_text(self, text, options)
         };
-        glyphs.set_uax_linebreak_flag(ends_with_uax_14_linebreak);
+        glyphs.ends_with_uax_14_linebreak = ends_with_uax_14_linebreak;
 
         let shaped_text = Arc::new(glyphs);
         let mut cache = self.cached_shape_data.write();

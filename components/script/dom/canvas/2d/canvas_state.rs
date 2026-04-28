@@ -2551,7 +2551,11 @@ impl UnshapedTextRun<'_> {
             flags: ShapingFlags::empty(),
         };
 
-        let glyphs = font.shape_text(self.string, &options, true);
+        let glyphs = font.shape_text(
+            self.string,
+            &options,
+            true, /* ends_with_uax_14_linebreak */
+        );
 
         let mut advance = 0.0;
         let mut bounds = None;

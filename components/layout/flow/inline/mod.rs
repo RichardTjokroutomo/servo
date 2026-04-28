@@ -1774,6 +1774,8 @@ impl InlineFormattingContextLayout<'_> {
     /// Process a soft wrap opportunity. This will either commit the current unbreakble
     /// segment to the current line, if it fits within the containing block and float
     /// placement boundaries, or do a line break and then commit the segment.
+    ///
+    /// Returns false if linebreak happens, true otherwise.
     fn process_soft_wrap_opportunity(&mut self) -> bool {
         if self.current_line_segment.line_items.is_empty() {
             return true;
