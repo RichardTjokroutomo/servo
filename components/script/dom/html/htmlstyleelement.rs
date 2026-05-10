@@ -377,24 +377,24 @@ impl VirtualMethods for HTMLStyleElement {
         }
 
         if attr.name() == "type" {
-            if let AttributeMutation::Set(Some(old_value), _) = mutation {
-                if **old_value == **attr.value() {
-                    return;
-                }
+            if let AttributeMutation::Set(Some(old_value), _) = mutation &&
+                **old_value == **attr.value()
+            {
+                return;
             }
             self.remove_stylesheet();
             self.update_a_style_block();
-        } else if attr.name() == "media" {
-            if let Some(ref stylesheet) = *self.stylesheet.borrow_mut() {
-                let shared_lock = node.owner_doc().style_shared_lock().clone();
-                let mut guard = shared_lock.write();
-                let media = stylesheet.media.write_with(&mut guard);
-                match mutation {
-                    AttributeMutation::Set(..) => *media = self.create_media_list(&attr.value()),
-                    AttributeMutation::Removed => *media = StyleMediaList::empty(),
-                };
-                self.owner_document().invalidate_stylesheets();
-            }
+        } else if attr.name() == "media" &&
+            let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
+        {
+            let shared_lock = node.owner_doc().style_shared_lock().clone();
+            let mut guard = shared_lock.write();
+            let media = stylesheet.media.write_with(&mut guard);
+            match mutation {
+                AttributeMutation::Set(..) => *media = self.create_media_list(&attr.value()),
+                AttributeMutation::Removed => *media = StyleMediaList::empty(),
+            };
+            self.owner_document().invalidate_stylesheets();
         }
     }
 }
@@ -438,7 +438,7 @@ impl StylesheetOwner for HTMLStyleElement {
                 .is_some_and(|list| list.Contains("render".into()))
     }
 
-    fn referrer_policy(&self) -> ReferrerPolicy {
+    fn referrer_policy(&self, _cx: &mut js::context::JSContext) -> ReferrerPolicy {
         ReferrerPolicy::EmptyString
     }
 
@@ -481,13 +481,13 @@ impl HTMLStyleElementMethods<crate::DomTypeHolder> for HTMLStyleElement {
     make_setter!(SetMedia, "media");
 
     /// <https://html.spec.whatwg.org/multipage/#attr-style-blocking>
-    fn Blocking(&self, can_gc: CanGc) -> DomRoot<DOMTokenList> {
+    fn Blocking(&self, cx: &mut js::context::JSContext) -> DomRoot<DOMTokenList> {
         self.blocking.or_init(|| {
             DOMTokenList::new(
+                cx,
                 self.upcast(),
                 &local_name!("blocking"),
                 Some(vec![Atom::from("render")]),
-                can_gc,
             )
         })
     }

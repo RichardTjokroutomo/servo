@@ -50,6 +50,7 @@ use regex::bytes::Regex;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::interfaces::DocumentHelpers;
+use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::script_runtime::JSContext;
 use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
@@ -109,7 +110,7 @@ use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::reflector::{DomGlobal, reflect_dom_object_with_proto};
+use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayout, UnrootedDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::trace::{HashMapTracedValues, NoTrace};
@@ -497,6 +498,9 @@ pub(crate) struct Document {
     /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-redirectend>
     #[no_trace]
     redirect_end: Cell<Option<CrossProcessInstant>>,
+    /// <https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-secureconnectionstart>
+    #[no_trace]
+    secure_connection_start: Cell<Option<CrossProcessInstant>>,
     /// Number of outstanding requests to prevent JS or layout from running.
     script_and_layout_blockers: Cell<u32>,
     /// List of tasks to execute as soon as last script/layout blocker is removed.
@@ -713,17 +717,17 @@ impl Document {
                 // will trigger a new empty display list.
                 self.root_removal_noted.set(false);
 
-                if let Some(dirty_root) = self.dirty_root.get() {
-                    if dirty_root.is_connected() {
-                        // There was an existing dirty root so we mark its
-                        // ancestors as dirty until the document element.
-                        for ancestor in dirty_root
-                            .upcast::<Node>()
-                            .inclusive_ancestors_in_flat_tree()
-                        {
-                            if ancestor.is::<Element>() {
-                                ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
-                            }
+                if let Some(dirty_root) = self.dirty_root.get() &&
+                    dirty_root.is_connected()
+                {
+                    // There was an existing dirty root so we mark its
+                    // ancestors as dirty until the document element.
+                    for ancestor in dirty_root
+                        .upcast::<Node>()
+                        .inclusive_ancestors_in_flat_tree()
+                    {
+                        if ancestor.is::<Element>() {
+                            ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
                         }
                     }
                 }
@@ -970,10 +974,10 @@ impl Document {
 
         // Step 2: If document's URL matches about:blank and document's about base URL is
         // non-null, then return document's about base URL.
-        if document_url.matches_about_blank() {
-            if let Some(about_base_url) = self.about_base_url() {
-                return about_base_url;
-            }
+        if document_url.matches_about_blank() &&
+            let Some(about_base_url) = self.about_base_url()
+        {
+            return about_base_url;
         }
 
         // Step 3: Return document's URL.
@@ -1007,10 +1011,10 @@ impl Document {
         // FIXME: This should check the dirty bit on the document,
         // not the document element. Needs some layout changes to make
         // that workable.
-        if let Some(root) = self.GetDocumentElement() {
-            if root.upcast::<Node>().has_dirty_descendants() {
-                condition.insert(RestyleReason::DOMChanged);
-            }
+        if let Some(root) = self.GetDocumentElement() &&
+            root.upcast::<Node>().has_dirty_descendants()
+        {
+            condition.insert(RestyleReason::DOMChanged);
         }
 
         if !self.pending_restyles.borrow().is_empty() {
@@ -2584,17 +2588,21 @@ impl Document {
         !load_cancellers.is_empty()
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#active-parser>
+    fn active_parser(&self) -> Option<DomRoot<ServoParser>> {
+        // > A Document is said to have an active parser if it is associated with
+        // > an HTML parser or an XML parser that has not yet been stopped or aborted.
+        self.get_current_parser()
+            .filter(|parser| !(parser.has_stopped() || parser.has_aborted()))
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#abort-a-document>
     pub(crate) fn abort(&self, cx: &mut js::context::JSContext) {
         // We need to inhibit the loader before anything else.
         self.loader.borrow_mut().inhibit_events();
 
-        // Step 1.
-        for iframe in self.iframes().iter() {
-            if let Some(document) = iframe.GetContentDocument() {
-                document.abort(cx);
-            }
-        }
+        // Step 1. Assert: this is running as part of a task queued on document's relevant agent's event loop.
+        // TODO
 
         // Step 2. Cancel any instances of the fetch algorithm in the context of document,
         // discarding any tasks queued for them, and discarding any further data received
@@ -2625,7 +2633,7 @@ impl Document {
         // TODO
 
         // Step 4. If document has an active parser, then:
-        if let Some(parser) = self.get_current_parser() {
+        if let Some(parser) = self.active_parser() {
             // Step 4.1. Set document's active parser was aborted to true.
             self.active_parser_was_aborted.set(true);
             // Step 4.2. Abort that parser.
@@ -2633,6 +2641,39 @@ impl Document {
             // Step 4.3. Make document unsalvageable given document and "parser-aborted".
             self.salvageable.set(false);
         }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#abort-a-document-and-its-descendants>
+    pub(crate) fn abort_a_document_and_its_descendants(&self, cx: &mut js::context::JSContext) {
+        // Step 1. Assert: this is running as part of a task queued on document's relevant agent's event loop.
+        // TODO
+
+        // Step 2. Let descendantNavigables be document's descendant navigables.
+        // Step 3. For each descendantNavigable of descendantNavigables,
+        // queue a global task on the navigation and traversal task source given
+        // descendantNavigable's active window to perform the following steps:
+        for iframe in self.iframes().iter() {
+            if let Some(descendant_document) = iframe.GetContentDocument() {
+                let trusted_descendant_document = Trusted::new(&*descendant_document);
+                let document = Trusted::new(self);
+                descendant_document
+                    .owner_global()
+                    .task_manager()
+                    .navigation_and_traversal_task_source()
+                    .queue(task!(abort_iframe_document: move |cx| {
+                        let descendant_document = trusted_descendant_document.root();
+                        // Step 3.1. Abort descendantNavigable's active document.
+                        descendant_document.abort(cx);
+                        // Step 3.2. If descendantNavigable's active document's salvageable is false, then set document's salvageable to false.
+                        if !descendant_document.salvageable.get() {
+                            document.root().salvageable.set(false);
+                        }
+                    }));
+            }
+        }
+
+        // Step 4. Abort document.
+        self.abort(cx);
     }
 
     pub(crate) fn notify_constellation_load(&self) {
@@ -2948,12 +2989,12 @@ impl Document {
     /// >    a font, or which depend on recently-loaded fonts
     ///
     /// Returns true if the promise was fulfilled.
-    pub(crate) fn maybe_fulfill_font_ready_promise(&self, can_gc: CanGc) -> bool {
+    pub(crate) fn maybe_fulfill_font_ready_promise(&self, cx: &mut js::context::JSContext) -> bool {
         if !self.is_fully_active() {
             return false;
         }
 
-        let fonts = self.Fonts(can_gc);
+        let fonts = self.Fonts(cx);
         if !fonts.waiting_to_fullfill_promise() {
             return false;
         }
@@ -2970,7 +3011,7 @@ impl Document {
             return false;
         }
 
-        let result = fonts.fulfill_ready_promise_if_needed(can_gc);
+        let result = fonts.fulfill_ready_promise_if_needed(cx);
 
         // Add a rendering update after the `fonts.ready` promise is fulfilled just for
         // the sake of taking screenshots. This has the effect of delaying screenshots
@@ -3304,7 +3345,7 @@ impl Document {
         }
 
         // Step 8: If document's active parser was aborted is true, then return.
-        if !self.is_active() || self.active_parser_was_aborted.get() {
+        if self.active_parser_was_aborted.get() {
             return Ok(());
         }
 
@@ -3606,6 +3647,7 @@ impl Document {
             redirect_count: Cell::new(0),
             redirect_start: Cell::new(None),
             redirect_end: Cell::new(None),
+            secure_connection_start: Cell::new(None),
             completely_loaded: Cell::new(false),
             script_and_layout_blockers: Cell::new(0),
             delayed_tasks: Default::default(),
@@ -3876,6 +3918,14 @@ impl Document {
 
     pub(crate) fn set_redirect_end(&self, time: Option<CrossProcessInstant>) {
         self.redirect_end.set(time)
+    }
+
+    pub(crate) fn get_secure_connection_start(&self) -> Option<CrossProcessInstant> {
+        self.secure_connection_start.get()
+    }
+
+    pub(crate) fn set_secure_connection_start(&self, time: Option<CrossProcessInstant>) {
+        self.secure_connection_start.set(time)
     }
 
     pub(crate) fn elements_by_name_count(&self, name: &DOMString) -> u32 {
@@ -5944,20 +5994,22 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         _unused1: Option<DOMString>,
         _unused2: Option<DOMString>,
     ) -> Fallible<DomRoot<Document>> {
-        // Step 1
+        // Step 1. If document is an XML document, then throw an "InvalidStateError" DOMException.
         if !self.is_html_document() {
             return Err(Error::InvalidState(None));
         }
 
-        // Step 2
+        // Step 2. If document's throw-on-dynamic-markup-insertion counter is greater than 0,
+        // then throw an "InvalidStateError" DOMException.
         if self.throw_on_dynamic_markup_insertion_counter.get() > 0 {
             return Err(Error::InvalidState(None));
         }
 
-        // Step 3
+        // Step 3. Let entryDocument be the entry global object's associated Document.
         let entry_responsible_document = GlobalScope::entry().as_window().Document();
 
-        // Step 4
+        // Step 4. If document's origin is not same origin to entryDocument's origin,
+        // then throw a "SecurityError" DOMException.
         if !self
             .origin()
             .same_origin(&entry_responsible_document.origin())
@@ -5965,20 +6017,21 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             return Err(Error::Security(None));
         }
 
-        // Step 5
+        // Step 5. If document has an active parser whose script nesting level is greater than 0,
+        // then return document.
         if self
-            .get_current_parser()
-            .is_some_and(|parser| parser.is_active())
+            .active_parser()
+            .is_some_and(|parser| parser.script_nesting_level() > 0)
         {
             return Ok(DomRoot::from_ref(self));
         }
 
-        // Step 6
+        // Step 6. Similarly, if document's unload counter is greater than 0, then return document.
         if self.is_prompting_or_unloading() {
             return Ok(DomRoot::from_ref(self));
         }
 
-        // Step 7
+        // Step 7. If document's active parser was aborted is true, then return document.
         if self.active_parser_was_aborted.get() {
             return Ok(DomRoot::from_ref(self));
         }
@@ -5988,7 +6041,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
         self.window().set_navigation_start();
 
-        // Step 8
+        // Step 8. If document's node navigable is non-null and document's node navigable's
+        // ongoing navigation is a navigation ID, then stop loading document's node navigable.
         // TODO: https://github.com/servo/servo/issues/21937
         if self.has_browsing_context() {
             // spec says "stop document loading",
@@ -5996,7 +6050,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             self.abort(cx);
         }
 
-        // Step 9
+        // Step 9. For each shadow-including inclusive descendant node of document,
+        // erase all event listeners and handlers given node.
         for node in self
             .upcast::<Node>()
             .traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::Yes)
@@ -6004,7 +6059,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             node.upcast::<EventTarget>().remove_all_listeners();
         }
 
-        // Step 10
+        // Step 10. If document is the associated Document of document's relevant global object,
+        // then erase all event listeners and handlers given document's relevant global object.
         if self.window.Document() == DomRoot::from_ref(self) {
             self.window.upcast::<EventTarget>().remove_all_listeners();
         }
@@ -6233,9 +6289,9 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#font-face-source>
-    fn Fonts(&self, can_gc: CanGc) -> DomRoot<FontFaceSet> {
+    fn Fonts(&self, cx: &mut js::context::JSContext) -> DomRoot<FontFaceSet> {
         self.fonts
-            .or_init(|| FontFaceSet::new(&self.global(), None, can_gc))
+            .or_init(|| FontFaceSet::new(cx, &self.global(), None))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-document-hidden>

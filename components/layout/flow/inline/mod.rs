@@ -83,7 +83,7 @@ use app_units::{Au, MAX_AU};
 use atomic_refcell::AtomicRef;
 use bitflags::bitflags;
 use construct::InlineFormattingContextBuilder;
-use fonts::{FontMetrics, FontRef, ShapedText};
+use fonts::{FontMetrics, FontRef, ShapedTextSlice};
 use icu_locid::LanguageIdentifier;
 use icu_locid::subtags::{Language, language};
 use icu_properties::{self, LineBreak as ICULineBreak};
@@ -529,7 +529,7 @@ impl LineUnderConstruction {
                     text_run
                         .text
                         .iter()
-                        .map(|glyph_store| glyph_store.total_word_separators())
+                        .map(|shaped_text_slice| shaped_text_slice.total_word_separators())
                         .sum::<usize>(),
                 ),
                 _ => None,
@@ -1561,7 +1561,7 @@ impl InlineFormattingContextLayout<'_> {
 
     fn push_glyph_store_to_unbreakable_segment(
         &mut self,
-        glyph_store: Arc<ShapedText>,
+        glyph_store: Arc<ShapedTextSlice>,
         text_run: &TextRun,
         info: &Arc<FontAndScriptInfo>,
         offsets: Option<TextRunOffsets>,
@@ -1611,18 +1611,11 @@ impl InlineFormattingContextLayout<'_> {
 
         let current_inline_box_identifier = self.current_inline_box_identifier();
         if let Some(LineItem::TextRun(inline_box_identifier, line_item)) =
-            self.current_line_segment.line_items.last_mut()
+            self.current_line_segment.line_items.last_mut() &&
+            *inline_box_identifier == current_inline_box_identifier &&
+            line_item.merge_if_possible(info, &glyph_store, &offsets, &text_run.inline_styles)
         {
-            if *inline_box_identifier == current_inline_box_identifier &&
-                line_item.merge_if_possible(
-                    info,
-                    &glyph_store,
-                    &offsets,
-                    &text_run.inline_styles,
-                )
-            {
-                return;
-            }
+            return;
         }
 
         self.push_line_item_to_unbreakable_segment(LineItem::TextRun(
@@ -2629,10 +2622,10 @@ impl FloatBox {
 
 fn place_pending_floats(ifc: &mut InlineFormattingContextLayout, line_items: &mut [LineItem]) {
     for item in line_items.iter_mut() {
-        if let LineItem::Float(_, float_line_item) = item {
-            if float_line_item.needs_placement {
-                ifc.place_float_fragment(&mut float_line_item.fragment.borrow_mut());
-            }
+        if let LineItem::Float(_, float_line_item) = item &&
+            float_line_item.needs_placement
+        {
+            ifc.place_float_fragment(&mut float_line_item.fragment.borrow_mut());
         }
     }
 }

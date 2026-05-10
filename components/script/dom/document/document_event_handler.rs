@@ -71,6 +71,7 @@ use crate::dom::gamepad::gamepadevent::GamepadEventType;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::interactive_element_command::InteractiveElementCommand;
 use crate::dom::keyboardevent::KeyboardEvent;
+use crate::dom::node::focus::FocusNavigationScopeOwner;
 use crate::dom::node::{self, Node, NodeTraits, ShadowIncluding};
 use crate::dom::pointerevent::{PointerEvent, PointerId};
 use crate::dom::scrolling_box::{ScrollAxisState, ScrollRequirement, ScrollingBoxAxis};
@@ -161,7 +162,7 @@ pub(crate) struct DocumentEventHandler {
     /// The [`InputEventId`]s of mousemove events that have been coalesced.
     #[no_trace]
     #[ignore_malloc_size_of = "InputEventId contains data from outside crates"]
-    coalesced_move_event_ids: DomRefCell<Vec<InputEventId>>,
+    coalesced_mouse_move_event_ids: DomRefCell<Vec<InputEventId>>,
     /// The index of the last wheel event in the pending input events queue.
     /// This is non-standard behaviour.
     /// According to <https://www.w3.org/TR/pointerevents/#dfn-coalesced-events>,
@@ -181,6 +182,9 @@ pub(crate) struct DocumentEventHandler {
     mouse_buttons_down: Cell<u32>,
     /// The element that is currently hovered by the cursor.
     current_hover_target: MutNullableDom<Element>,
+    /// The element that was most recently activated during a mouse button press or touch
+    /// event.
+    current_active_element: MutNullableDom<Element>,
     /// The element that was most recently clicked.
     most_recently_clicked_element: MutNullableDom<Element>,
     /// The most recent mouse movement point, used for processing `mouseleave` events.
@@ -211,13 +215,14 @@ impl DocumentEventHandler {
             window: Dom::from_ref(window),
             pending_input_events: Default::default(),
             mouse_move_event_index: Default::default(),
-            coalesced_move_event_ids: Default::default(),
+            coalesced_mouse_move_event_ids: Default::default(),
             wheel_event_index: Default::default(),
             coalesced_wheel_event_ids: Default::default(),
             click_counting_info: Default::default(),
             last_mouse_button_down_point: Default::default(),
             mouse_buttons_down: Cell::new(0),
             current_hover_target: Default::default(),
+            current_active_element: Default::default(),
             most_recently_clicked_element: Default::default(),
             most_recent_mousemove_point: Default::default(),
             current_cursor: Default::default(),
@@ -240,7 +245,7 @@ impl DocumentEventHandler {
                 .borrow()
                 .and_then(|index| pending_input_events.get_mut(index))
             {
-                self.coalesced_move_event_ids
+                self.coalesced_mouse_move_event_ids
                     .borrow_mut()
                     .push(mouse_move_event.event.id);
                 *mouse_move_event = event;
@@ -255,23 +260,20 @@ impl DocumentEventHandler {
             if let Some(existing_constellation_wheel_event) = self
                 .wheel_event_index
                 .borrow()
-                .and_then(|index| pending_input_events.get_mut(index))
+                .and_then(|index| pending_input_events.get_mut(index)) &&
+                let InputEvent::Wheel(ref mut existing_wheel_event) =
+                    existing_constellation_wheel_event.event.event &&
+                existing_wheel_event.delta.mode == new_wheel_event.delta.mode
             {
-                if let InputEvent::Wheel(ref mut existing_wheel_event) =
-                    existing_constellation_wheel_event.event.event
-                {
-                    if existing_wheel_event.delta.mode == new_wheel_event.delta.mode {
-                        self.coalesced_wheel_event_ids
-                            .borrow_mut()
-                            .push(existing_constellation_wheel_event.event.id);
-                        existing_wheel_event.delta.x += new_wheel_event.delta.x;
-                        existing_wheel_event.delta.y += new_wheel_event.delta.y;
-                        existing_wheel_event.delta.z += new_wheel_event.delta.z;
-                        existing_wheel_event.point = new_wheel_event.point;
-                        existing_constellation_wheel_event.event.id = event.event.id;
-                        return;
-                    }
-                }
+                self.coalesced_wheel_event_ids
+                    .borrow_mut()
+                    .push(existing_constellation_wheel_event.event.id);
+                existing_wheel_event.delta.x += new_wheel_event.delta.x;
+                existing_wheel_event.delta.y += new_wheel_event.delta.y;
+                existing_wheel_event.delta.z += new_wheel_event.delta.z;
+                existing_wheel_event.point = new_wheel_event.point;
+                existing_constellation_wheel_event.event.id = event.event.id;
+                return;
             }
 
             *self.wheel_event_index.borrow_mut() = Some(pending_input_events.len());
@@ -312,14 +314,14 @@ impl DocumentEventHandler {
         *self.mouse_move_event_index.borrow_mut() = None;
         *self.wheel_event_index.borrow_mut() = None;
         let pending_input_events = mem::take(&mut *self.pending_input_events.borrow_mut());
-        let mut coalesced_move_event_ids =
-            mem::take(&mut *self.coalesced_move_event_ids.borrow_mut());
+        let mut coalesced_mouse_move_event_ids =
+            mem::take(&mut *self.coalesced_mouse_move_event_ids.borrow_mut());
         let mut coalesced_wheel_event_ids =
             mem::take(&mut *self.coalesced_wheel_event_ids.borrow_mut());
 
         let mut input_event_outcomes = Vec::with_capacity(
             pending_input_events.len() +
-                coalesced_move_event_ids.len() +
+                coalesced_mouse_move_event_ids.len() +
                 coalesced_wheel_event_ids.len(),
         );
         // TODO: For some of these we still aren't properly calculating whether or not
@@ -338,7 +340,7 @@ impl DocumentEventHandler {
                 InputEvent::MouseMove(_) => {
                     self.handle_native_mouse_move_event(cx, &event);
                     input_event_outcomes.extend(
-                        mem::take(&mut coalesced_move_event_ids)
+                        mem::take(&mut coalesced_mouse_move_event_ids)
                             .into_iter()
                             .map(|id| InputEventOutcome {
                                 id,
@@ -443,7 +445,6 @@ impl DocumentEventHandler {
                 .filter_map(DomRoot::downcast::<Element>)
             {
                 element.set_hover_state(false);
-                self.element_for_activation(element).set_active_state(false);
             }
 
             if let Some(hit_test_result) = self
@@ -621,7 +622,6 @@ impl DocumentEventHandler {
                         .filter_map(DomRoot::downcast::<Element>)
                     {
                         element.set_hover_state(false);
-                        self.element_for_activation(element).set_active_state(false);
                     }
                 }
 
@@ -741,19 +741,18 @@ impl DocumentEventHandler {
 
         // If the new hover target is an anchor with a status value, inform the embedder
         // of the new value.
-        if let Some(target) = self.current_hover_target.get() {
-            if let Some(anchor) = target
+        if let Some(target) = self.current_hover_target.get() &&
+            let Some(anchor) = target
                 .upcast::<Node>()
                 .inclusive_ancestors(ShadowIncluding::Yes)
                 .find_map(DomRoot::downcast::<HTMLAnchorElement>)
-            {
-                let status = anchor
-                    .full_href_url_for_user_interface()
-                    .map(|url| url.to_string());
-                self.window
-                    .send_to_embedder(EmbedderMsg::Status(self.window.webview_id(), status));
-                return;
-            }
+        {
+            let status = anchor
+                .full_href_url_for_user_interface()
+                .map(|url| url.to_string());
+            self.window
+                .send_to_embedder(EmbedderMsg::Status(self.window.webview_id(), status));
+            return;
         }
 
         // No state was set above, which means that the new value of the status in the embedder
@@ -786,27 +785,49 @@ impl DocumentEventHandler {
         self.set_cursor(Some(hit_test_result.cursor));
     }
 
-    fn element_for_activation(&self, element: DomRoot<Element>) -> DomRoot<Element> {
-        let node: &Node = element.upcast();
-        if node.is_in_ua_widget() {
-            if let Some(containing_shadow_root) = node.containing_shadow_root() {
+    fn set_active_element(&self, original_target: &Element) {
+        let find_element_for_activation = |element: &Element| {
+            let node: &Node = element.upcast();
+            if node.is_in_ua_widget() &&
+                let Some(containing_shadow_root) = node.containing_shadow_root()
+            {
                 return containing_shadow_root.Host();
             }
-        }
 
-        // If the element is a label, the activable element is the control element.
-        if node.type_id() ==
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
-                HTMLElementTypeId::HTMLLabelElement,
-            ))
-        {
-            let label = element.downcast::<HTMLLabelElement>().unwrap();
-            if let Some(control) = label.GetControl() {
-                return DomRoot::from_ref(control.upcast::<Element>());
+            // If the element is a label, the activable element is the control element.
+            if node.type_id() ==
+                NodeTypeId::Element(ElementTypeId::HTMLElement(
+                    HTMLElementTypeId::HTMLLabelElement,
+                ))
+            {
+                let label = element.downcast::<HTMLLabelElement>().unwrap();
+                if let Some(control) = label.GetControl() {
+                    return DomRoot::from_ref(control.upcast::<Element>());
+                }
             }
+
+            DomRoot::from_ref(element)
+        };
+        let element_for_activation = find_element_for_activation(original_target);
+
+        // This might happen if the user is alternating between different pointing devices
+        // such as two mice or a mouse and touch events. Only keep the latest activated.
+        if let Some(currently_active_element) = self.current_active_element.get() {
+            if currently_active_element == element_for_activation {
+                return;
+            }
+            self.unset_active_element();
         }
 
-        element
+        element_for_activation.set_active_state(true);
+        self.current_active_element
+            .set(Some(&*element_for_activation));
+    }
+
+    fn unset_active_element(&self) {
+        if let Some(active_element) = self.current_active_element.take() {
+            active_element.set_active_state(false);
+        }
     }
 
     /// <https://w3c.github.io/uievents/#mouseevent-algorithms>
@@ -845,15 +866,16 @@ impl DocumentEventHandler {
         debug!("{:?} on {:?}", event.action, node.debug_str());
 
         // <https://html.spec.whatwg.org/multipage/#selector-active>
-        // If the element is being actively pointed at the element is being activated.
-        // Disabled elements can also be activated.
-        if event.action == MouseButtonAction::Down {
-            self.element_for_activation(element.clone())
-                .set_active_state(true);
-        }
-        if event.action == MouseButtonAction::Up {
-            self.element_for_activation(element.clone())
-                .set_active_state(false);
+        // > If the element is being actively pointed at the element is being activated.
+        // Disabled elements can also be activated, so this must happen before the
+        // early return below.
+        if event.button == MouseButton::Left {
+            if event.action == MouseButtonAction::Down {
+                self.set_active_element(&element);
+            }
+            if event.action == MouseButtonAction::Up {
+                self.unset_active_element();
+            }
         }
 
         // https://w3c.github.io/uievents/#hit-test
@@ -1051,7 +1073,7 @@ impl DocumentEventHandler {
         //
         // We follow the latter approach here, considering that every sequence of
         // even numbered clicks is a series of double clicks.
-        if click_count % 2 == 0 {
+        if click_count.is_multiple_of(2) {
             MouseEvent::for_platform_button_event(
                 cx,
                 Atom::from("dblclick"),
@@ -1269,9 +1291,7 @@ impl DocumentEventHandler {
                 self.active_touch_points
                     .borrow_mut()
                     .push(Dom::from_ref(&*pointer_touch));
-                // <https://html.spec.whatwg.org/multipage/#selector-active>
-                // If the element is being actively pointed at the element is being activated.
-                self.element_for_activation(element).set_active_state(true);
+                self.set_active_element(&element);
                 (current_target, pointer_touch)
             },
             _ => {
@@ -1312,9 +1332,7 @@ impl DocumentEventHandler {
                     TouchEventType::Up | TouchEventType::Cancel => {
                         active_touch_points.swap_remove(index);
                         self.remove_pointer_id_for_touch(identifier);
-                        // <https://html.spec.whatwg.org/multipage/#selector-active>
-                        // If the element is being actively pointed at the element is being activated.
-                        self.element_for_activation(element).set_active_state(false);
+                        self.unset_active_element();
                     },
                     TouchEventType::Down => unreachable!("Should have been handled above"),
                 }
@@ -1620,12 +1638,11 @@ impl DocumentEventHandler {
             .queue(task!(gamepad_disconnected: move |cx| {
                 let window = trusted_window.root();
                 let navigator = window.Navigator();
-                if let Some(gamepad) = navigator.get_gamepad(index) {
-                    if window.Document().is_fully_active() {
+                if let Some(gamepad) = navigator.get_gamepad(index)
+                    && window.Document().is_fully_active() {
                         gamepad.update_connected(false, gamepad.exposed(), CanGc::from_cx(cx));
                         navigator.remove_gamepad(index);
                     }
-                }
             }));
     }
 
@@ -2048,13 +2065,12 @@ impl DocumentEventHandler {
         // > starting point, then let starting point be the sequential focus navigation starting point
         // > instead.
         if let Some(sequential_focus_navigation_starting_point) =
-            self.sequential_focus_navigation_starting_point()
-        {
-            if starting_point.as_ref().is_none_or(|starting_point| {
+            self.sequential_focus_navigation_starting_point() &&
+            starting_point.as_ref().is_none_or(|starting_point| {
                 starting_point.is_ancestor_of(&sequential_focus_navigation_starting_point)
-            }) {
-                starting_point = Some(sequential_focus_navigation_starting_point);
-            }
+            })
+        {
+            starting_point = Some(sequential_focus_navigation_starting_point);
         }
 
         // > 3. Let direction be "forward" if the user requested the next control, and "backward" if
@@ -2096,7 +2112,7 @@ impl DocumentEventHandler {
             })
             .unwrap_or_else(|| {
                 if starting_point_is_navigable {
-                    SequentialFocusNavigationMechanism::Navigable
+                    SequentialFocusNavigationMechanism::FirstOrLast
                 } else {
                     SequentialFocusNavigationMechanism::Dom
                 }
@@ -2105,7 +2121,10 @@ impl DocumentEventHandler {
         // > 5. Let candidate be the result of running the sequential navigation search algorithm
         // > with starting point, direction, and selection mechanism.
         let candidate = SequentialFocusNavigationSearch::new(
-            self.window.as_rooted(),
+            starting_point
+                .as_ref()
+                .and_then(|node| node.containing_focus_navigation_scope_owner())
+                .unwrap_or_else(|| FocusNavigationScopeOwner::Document(self.window.Document())),
             direction,
             selection_mechanism,
             starting_point,

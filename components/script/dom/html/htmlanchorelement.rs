@@ -36,7 +36,6 @@ use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::links::{LinkRelations, follow_hyperlink};
-use crate::script_runtime::CanGc;
 
 #[dom_struct]
 pub(crate) struct HTMLAnchorElement {
@@ -157,6 +156,7 @@ impl HTMLAnchorElementMethods<crate::DomTypeHolder> for HTMLAnchorElement {
     fn RelList(&self, cx: &mut JSContext) -> DomRoot<DOMTokenList> {
         self.rel_list.or_init(|| {
             DOMTokenList::new(
+                cx,
                 self.upcast(),
                 &local_name!("rel"),
                 Some(vec![
@@ -164,7 +164,6 @@ impl HTMLAnchorElementMethods<crate::DomTypeHolder> for HTMLAnchorElement {
                     Atom::from("noreferrer"),
                     Atom::from("opener"),
                 ]),
-                CanGc::from_cx(cx),
             )
         })
     }
@@ -358,16 +357,17 @@ impl Activatable for HTMLAnchorElement {
 
         // Step 1: If the target of the click event is an img element with an ismap attribute
         // specified, then server-side image map processing must be performed.
-        if let Some(element) = target.downcast::<Element>() {
-            if target.is::<HTMLImageElement>() && element.has_attribute(&local_name!("ismap")) {
-                let target_node = element.upcast::<Node>();
-                let rect = target_node.border_box().unwrap_or_default();
-                ismap_suffix = Some(format!(
-                    "?{},{}",
-                    mouse_event.ClientX().to_f32().unwrap() - rect.origin.x.to_f32_px(),
-                    mouse_event.ClientY().to_f32().unwrap() - rect.origin.y.to_f32_px()
-                ))
-            }
+        if let Some(element) = target.downcast::<Element>() &&
+            target.is::<HTMLImageElement>() &&
+            element.has_attribute(&local_name!("ismap"))
+        {
+            let target_node = element.upcast::<Node>();
+            let rect = target_node.border_box().unwrap_or_default();
+            ismap_suffix = Some(format!(
+                "?{},{}",
+                mouse_event.ClientX().to_f32().unwrap() - rect.origin.x.to_f32_px(),
+                mouse_event.ClientY().to_f32().unwrap() - rect.origin.y.to_f32_px()
+            ))
         }
 
         // Step 2.

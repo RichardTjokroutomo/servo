@@ -88,7 +88,8 @@ use servo_base::id::{
 };
 use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::webgl::WebGLPipeline;
-use servo_config::{opts, pref, prefs};
+use servo_config::opts::{self, DiagnosticsLoggingOption};
+use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     LoadData, LoadOrigin, NavigationHistoryBehavior, RemoteFocusOperation,
     ScreenshotReadinessResponse, ScriptToConstellationChan, ScriptToConstellationMessage,
@@ -1007,7 +1008,9 @@ impl ScriptThread {
                     docs_with_no_blocking_loads: Default::default(),
                     custom_element_reaction_stack: Rc::new(CustomElementReactionStack::new()),
                     paint_api: state.cross_process_paint_api,
-                    profile_script_events: opts.debug.profile_script_events,
+                    profile_script_events: opts
+                        .debug
+                        .is_enabled(DiagnosticsLoggingOption::ProfileScriptEvents),
                     unminify_js: opts.unminify_js,
                     local_script_source: opts.local_script_source.clone(),
                     unminify_css: opts.unminify_css,
@@ -1360,8 +1363,7 @@ impl ScriptThread {
     fn maybe_fulfill_font_ready_promises(&self, cx: &mut js::context::JSContext) {
         let mut sent_message = false;
         for (_, document) in self.documents.borrow().iter() {
-            sent_message =
-                document.maybe_fulfill_font_ready_promise(CanGc::from_cx(cx)) || sent_message;
+            sent_message = document.maybe_fulfill_font_ready_promise(cx) || sent_message;
         }
 
         if sent_message {
@@ -1372,11 +1374,11 @@ impl ScriptThread {
     /// If any `Pipeline`s are waiting to become ready for the purpose of taking a
     /// screenshot, check to see if the `Pipeline` is now ready and send a message to the
     /// Constellation, if so.
-    fn maybe_resolve_pending_screenshot_readiness_requests(&self, can_gc: CanGc) {
+    fn maybe_resolve_pending_screenshot_readiness_requests(&self, cx: &mut js::context::JSContext) {
         for (_, document) in self.documents.borrow().iter() {
             document
                 .window()
-                .maybe_resolve_pending_screenshot_readiness_requests(can_gc);
+                .maybe_resolve_pending_screenshot_readiness_requests(cx);
         }
     }
 
@@ -1531,7 +1533,7 @@ impl ScriptThread {
             self.needs_rendering_update.load(Ordering::Relaxed) && self.update_the_rendering(cx);
 
         self.maybe_fulfill_font_ready_promises(cx);
-        self.maybe_resolve_pending_screenshot_readiness_requests(CanGc::from_cx(cx));
+        self.maybe_resolve_pending_screenshot_readiness_requests(cx);
 
         // This must happen last to detect if any change above makes a rendering update necessary.
         self.maybe_schedule_rendering_opportunity_after_ipc_message(built_any_display_lists);
@@ -1726,16 +1728,20 @@ impl ScriptThread {
         };
         let task_duration = start.elapsed();
         for (doc_id, doc) in self.documents.borrow().iter() {
-            if let Some(pipeline_id) = pipeline_id {
-                if pipeline_id == doc_id && task_duration.as_nanos() > MAX_TASK_NS {
-                    if opts::get().debug.progressive_web_metrics {
-                        println!(
-                            "Task took longer than max allowed ({category:?}) {:?}",
-                            task_duration.as_nanos()
-                        );
-                    }
-                    doc.start_tti();
+            if let Some(pipeline_id) = pipeline_id &&
+                pipeline_id == doc_id &&
+                task_duration.as_nanos() > MAX_TASK_NS
+            {
+                if opts::get()
+                    .debug
+                    .is_enabled(DiagnosticsLoggingOption::ProgressiveWebMetrics)
+                {
+                    println!(
+                        "Task took longer than max allowed ({category:?}) {:?}",
+                        task_duration.as_nanos()
+                    );
                 }
+                doc.start_tti();
             }
             doc.record_tti_if_necessary();
         }
@@ -1955,11 +1961,7 @@ impl ScriptThread {
                 }
             },
             ScriptThreadMessage::RequestScreenshotReadiness(webview_id, pipeline_id) => {
-                self.handle_request_screenshot_readiness(
-                    webview_id,
-                    pipeline_id,
-                    CanGc::from_cx(cx),
-                );
+                self.handle_request_screenshot_readiness(webview_id, pipeline_id, cx);
             },
             ScriptThreadMessage::EmbedderControlResponse(id, response) => {
                 self.handle_embedder_control_response(id, response, cx);
@@ -3921,20 +3923,19 @@ impl ScriptThread {
             // we need to register an iframe entry to the performance timeline if present
             if let Some(window_proxy) = context
                 .get_document()
-                .and_then(|document| document.browsing_context())
+                .and_then(|document| document.browsing_context()) &&
+                let Some(frame_element) = window_proxy.frame_element()
             {
-                if let Some(frame_element) = window_proxy.frame_element() {
-                    let iframe_ctx = IframeContext::new(
-                        frame_element
-                            .downcast::<HTMLIFrameElement>()
-                            .expect("WindowProxy::frame_element should be an HTMLIFrameElement"),
-                    );
+                let iframe_ctx = IframeContext::new(
+                    frame_element
+                        .downcast::<HTMLIFrameElement>()
+                        .expect("WindowProxy::frame_element should be an HTMLIFrameElement"),
+                );
 
-                    // submit_timing will only accept timing that is of type ResourceTimingType::Resource
-                    let mut resource_timing = timing.clone();
-                    resource_timing.timing_type = ResourceTimingType::Resource;
-                    submit_timing(cx, &iframe_ctx, &eof, &resource_timing);
-                }
+                // submit_timing will only accept timing that is of type ResourceTimingType::Resource
+                let mut resource_timing = timing.clone();
+                resource_timing.timing_type = ResourceTimingType::Resource;
+                submit_timing(cx, &iframe_ctx, &eof, &resource_timing);
             }
 
             context.process_response_eof(cx, request_id, eof, timing);
@@ -4125,17 +4126,17 @@ impl ScriptThread {
             return;
         };
 
-        if let Some(window) = self.documents.borrow().find_window(pipeline_id) {
-            if window.live_devtools_updates() {
-                let css_error = CSSError {
-                    filename,
-                    line,
-                    column,
-                    msg,
-                };
-                let message = ScriptToDevtoolsControlMsg::ReportCSSError(pipeline_id, css_error);
-                sender.send(message).unwrap();
-            }
+        if let Some(window) = self.documents.borrow().find_window(pipeline_id) &&
+            window.live_devtools_updates()
+        {
+            let css_error = CSSError {
+                filename,
+                line,
+                column,
+                msg,
+            };
+            let message = ScriptToDevtoolsControlMsg::ReportCSSError(pipeline_id, css_error);
+            sender.send(message).unwrap();
         }
     }
 
@@ -4301,7 +4302,7 @@ impl ScriptThread {
         &self,
         webview_id: WebViewId,
         pipeline_id: PipelineId,
-        can_gc: CanGc,
+        cx: &mut js::context::JSContext,
     ) {
         let Some(window) = self.documents.borrow().find_window(pipeline_id) else {
             let _ = self.senders.pipeline_to_constellation_sender.send((
@@ -4313,7 +4314,7 @@ impl ScriptThread {
             ));
             return;
         };
-        window.request_screenshot_readiness(can_gc);
+        window.request_screenshot_readiness(cx);
     }
 
     fn handle_embedder_control_response(

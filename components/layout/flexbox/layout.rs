@@ -1470,12 +1470,11 @@ impl InitialFlexLineLayout<'_> {
 
     /// <https://drafts.csswg.org/css-flexbox/#algo-cross-line>
     fn cross_size<'items>(items: &'items [FlexLineItem<'items>], flex_context: &FlexContext) -> Au {
-        if flex_context.config.container_is_single_line {
-            if let SizeConstraint::Definite(size) =
+        if flex_context.config.container_is_single_line &&
+            let SizeConstraint::Definite(size) =
                 flex_context.container_inner_size_constraint.cross
-            {
-                return size;
-            }
+        {
+            return size;
         }
 
         let mut max_ascent = Au::zero();
@@ -1822,7 +1821,14 @@ impl FlexItem<'_> {
             // The main size of a flex item is considered to be definite if its flex basis is definite
             // or the flex container has a definite main size.
             // <https://drafts.csswg.org/css-flexbox-1/#definite-sizes>
-            let main_size = if self.flex_base_size_is_definite ||
+            //
+            // Each grid area’s width and height are considered definite
+            // when laying out the grid items into their respective containing blocks,
+            // after the grid is sized.
+            // <https://drafts.csswg.org/css-grid-1/#layout-algorithm>
+            let is_grid = self.box_.independent_formatting_context.is_grid();
+            let main_size = if is_grid ||
+                self.flex_base_size_is_definite ||
                 flex_context
                     .container_inner_size_constraint
                     .main

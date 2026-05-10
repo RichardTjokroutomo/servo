@@ -47,7 +47,7 @@ use servo_arc::Arc as ServoArc;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{PipelineId, WebViewId};
-use servo_config::opts::{self, DiagnosticsLogging};
+use servo_config::opts::{self, DiagnosticsLogging, DiagnosticsLoggingOption};
 use servo_config::pref;
 use servo_url::ServoUrl;
 use style::animation::DocumentAnimationSet;
@@ -885,7 +885,10 @@ impl LayoutThread {
     }
 
     fn maybe_print_reflow_event(&self, reflow_request: &ReflowRequest) {
-        if !self.debug.relayout_event {
+        if !self
+            .debug
+            .is_enabled(DiagnosticsLoggingOption::RelayoutEvent)
+        {
             return;
         }
 
@@ -1226,13 +1229,13 @@ impl LayoutThread {
 
         *self.fragment_tree.borrow_mut() = Some(fragment_tree);
 
-        if self.debug.style_tree {
+        if self.debug.is_enabled(DiagnosticsLoggingOption::StyleTree) {
             println!(
                 "{:?}",
                 ShowSubtreeDataAndPrimaryValues(dangerous_root_element.as_node())
             );
         }
-        if self.debug.rule_tree {
+        if self.debug.is_enabled(DiagnosticsLoggingOption::RuleTree) {
             recalc_style_traversal
                 .context()
                 .style_context
@@ -1259,7 +1262,7 @@ impl LayoutThread {
 
         if let Some(fragment_tree) = &*self.fragment_tree.borrow() {
             fragment_tree.calculate_scrollable_overflow();
-            if self.debug.flow_tree {
+            if self.debug.is_enabled(DiagnosticsLoggingOption::FlowTree) {
                 fragment_tree.print();
             }
         }
@@ -1316,7 +1319,7 @@ impl LayoutThread {
                 .set_all_scroll_offsets(&old_scroll_offsets);
         }
 
-        if self.debug.scroll_tree {
+        if self.debug.is_enabled(DiagnosticsLoggingOption::ScrollTree) {
             new_stacking_context_tree
                 .paint_info
                 .scroll_tree
@@ -1396,16 +1399,16 @@ impl LayoutThread {
             built_display_list,
         );
 
-        if paint_timing_handler.did_lcp_candidate_update() {
-            if let Some(lcp_candidate) = paint_timing_handler.largest_contentful_paint_candidate() {
-                self.paint_api.send_lcp_candidate(
-                    lcp_candidate,
-                    self.webview_id,
-                    self.id,
-                    stacking_context_tree.paint_info.epoch,
-                );
-                paint_timing_handler.unset_lcp_candidate_updated();
-            }
+        if paint_timing_handler.did_lcp_candidate_update() &&
+            let Some(lcp_candidate) = paint_timing_handler.largest_contentful_paint_candidate()
+        {
+            self.paint_api.send_lcp_candidate(
+                lcp_candidate,
+                self.webview_id,
+                self.id,
+                stacking_context_tree.paint_info.epoch,
+            );
+            paint_timing_handler.unset_lcp_candidate_updated();
         }
 
         let (keys, instance_keys) = self

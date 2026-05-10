@@ -1247,10 +1247,11 @@ impl VirtualMethods for HTMLScriptElement {
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
         if *attr.local_name() == local_name!("src") {
-            if let AttributeMutation::Set(..) = mutation {
-                if !self.parser_inserted.get() && self.upcast::<Node>().is_connected() {
-                    self.prepare(cx, Some(IntroductionType::INJECTED_SCRIPT));
-                }
+            if let AttributeMutation::Set(..) = mutation &&
+                !self.parser_inserted.get() &&
+                self.upcast::<Node>().is_connected()
+            {
+                self.prepare(cx, Some(IntroductionType::INJECTED_SCRIPT));
             }
         } else if *attr.local_name() == local_name!("blocking") &&
             !self.has_render_blocking_attribute() &&
@@ -1374,10 +1375,10 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
     fn Blocking(&self, cx: &mut JSContext) -> DomRoot<DOMTokenList> {
         self.blocking.or_init(|| {
             DOMTokenList::new(
+                cx,
                 self.upcast(),
                 &local_name!("blocking"),
                 Some(vec![Atom::from("render")]),
-                CanGc::from_cx(cx),
             )
         })
     }

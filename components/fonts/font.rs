@@ -364,10 +364,6 @@ impl Font {
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub struct ShapingFlags: u8 {
-        /// Set if the text is entirely whitespace.
-        const IS_WHITESPACE_SHAPING_FLAG = 1 << 0;
-        /// Set if the text ends with whitespace.
-        const ENDS_WITH_WHITESPACE_SHAPING_FLAG = 1 << 1;
         /// Set if we are to ignore ligatures.
         const IGNORE_LIGATURES_SHAPING_FLAG = 1 << 2;
         /// Set if we are to disable kerning.
@@ -470,7 +466,7 @@ impl Font {
 
     /// Fast path for ASCII text that only needs simple horizontal LTR kerning.
     fn shape_text_fast(&self, text: &str, options: &ShapingOptions) -> ShapedText {
-        let mut glyph_store = ShapedText::new(text.len(), options);
+        let mut glyph_store = ShapedText::new(text.len(), false /* is_rtl */);
         let mut prev_glyph_id = None;
         for (string_byte_offset, byte) in text.bytes().enumerate() {
             let character = byte as char;
@@ -584,6 +580,12 @@ impl Font {
 
 #[derive(Clone, Debug, MallocSizeOf)]
 pub struct FontRef(#[conditional_malloc_size_of] pub(crate) Arc<Font>);
+
+impl PartialEq for FontRef {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self, other)
+    }
+}
 
 impl Deref for FontRef {
     type Target = Arc<Font>;
@@ -699,12 +701,11 @@ impl FontGroup {
         }
 
         let fallback_key = FallbackKey::new(&options);
-        if let Some(fallback) = self.fallbacks.read().get(&fallback_key) {
-            if char_in_template(fallback.template.clone()) &&
-                font_has_glyph_and_presentation(fallback)
-            {
-                return font_or_synthesized_small_caps(fallback.clone());
-            }
+        if let Some(fallback) = self.fallbacks.read().get(&fallback_key) &&
+            char_in_template(fallback.template.clone()) &&
+            font_has_glyph_and_presentation(fallback)
+        {
+            return font_or_synthesized_small_caps(fallback.clone());
         }
 
         if let Some(font) = self.find_fallback_using_system_font_list(
@@ -723,11 +724,10 @@ impl FontGroup {
         let first_font = self.first(font_context);
         if let Some(fallback) = first_font
             .as_ref()
-            .and_then(|font| font.find_fallback_using_system_font_api(&options))
+            .and_then(|font| font.find_fallback_using_system_font_api(&options)) &&
+            font_has_glyph_and_presentation(&fallback)
         {
-            if font_has_glyph_and_presentation(&fallback) {
-                return Some(fallback);
-            }
+            return Some(fallback);
         }
 
         first_font

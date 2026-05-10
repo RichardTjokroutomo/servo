@@ -628,10 +628,10 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
 
         // Step 7: If next is non-null and next's previous sibling is a Text node, then merge with
         // the next text node given next's previous sibling.
-        if let Some(next_sibling) = next {
-            if let Some(node) = next_sibling.GetPreviousSibling() {
-                Self::merge_with_the_next_text_node(cx, node);
-            }
+        if let Some(next_sibling) = next &&
+            let Some(node) = next_sibling.GetPreviousSibling()
+        {
+            Self::merge_with_the_next_text_node(cx, node);
         }
 
         // Step 8: If previous is a Text node, then merge with the next text node given previous.
@@ -954,10 +954,10 @@ impl HTMLElement {
             return Some("rtl".to_owned());
         }
 
-        if let Some(input) = self.downcast::<HTMLInputElement>() {
-            if matches!(*input.input_type(), InputType::Tel(_)) {
-                return Some("ltr".to_owned());
-            }
+        if let Some(input) = self.downcast::<HTMLInputElement>() &&
+            matches!(*input.input_type(), InputType::Tel(_))
+        {
+            return Some("ltr".to_owned());
         }
 
         if element_direction == "auto" {
@@ -987,12 +987,13 @@ impl HTMLElement {
         debug_assert!(self.as_element().local_name() == &local_name!("summary"));
 
         // Step 1. If this summary element is not the summary for its parent details, then return.
-        if !self.is_a_summary_for_its_parent_details() {
+        let is_implicit_summary_element = self.is_implicit_summary_element();
+        if !is_implicit_summary_element && !self.is_a_summary_for_its_parent_details() {
             return;
         }
 
         // Step 2. Let parent be this summary element's parent.
-        let parent = if self.is_implicit_summary_element() {
+        let parent = if is_implicit_summary_element {
             DomRoot::downcast::<HTMLDetailsElement>(self.containing_shadow_root().unwrap().Host())
                 .unwrap()
         } else {
@@ -1009,10 +1010,6 @@ impl HTMLElement {
 
     /// <https://html.spec.whatwg.org/multipage/#summary-for-its-parent-details>
     pub(crate) fn is_a_summary_for_its_parent_details(&self) -> bool {
-        if self.is_implicit_summary_element() {
-            return true;
-        }
-
         // Step 1. If this summary element has no parent, then return false.
         // Step 2. Let parent be this summary element's parent.
         let Some(parent) = self.upcast::<Node>().GetParentNode() else {

@@ -281,12 +281,11 @@ impl VirtualMethods for HTMLLinkElement {
 
         // For stylesheets, we should only refetch when the actual attribute value
         // has been changed.
-        if self.relations.get().contains(LinkRelations::STYLESHEET) {
-            if let AttributeMutation::Set(Some(previous_value), _) = mutation {
-                if **previous_value == **attr.value() {
-                    return;
-                }
-            }
+        if self.relations.get().contains(LinkRelations::STYLESHEET) &&
+            let AttributeMutation::Set(Some(previous_value), _) = mutation &&
+            **previous_value == **attr.value()
+        {
+            return;
         }
 
         match *local_name {
@@ -294,7 +293,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // https://html.spec.whatwg.org/multipage/#link-type-stylesheet:fetch-and-process-the-linked-resource
                 // > When the external resource link is created on a link element that is already browsing-context connected.
                 if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                    self.handle_stylesheet_url();
+                    self.handle_stylesheet_url(cx);
                 } else {
                     self.remove_stylesheet();
                 }
@@ -316,7 +315,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // > When the href attribute of the link element of an external resource link
                 // > that is already browsing-context connected is changed.
                 if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                    self.handle_stylesheet_url();
+                    self.handle_stylesheet_url(cx);
                 }
 
                 if self.relations.get().contains(LinkRelations::ICON) {
@@ -357,17 +356,17 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the crossorigin attribute of the link element of an external resource link
                 // that is already browsing-context connected is set, changed, or removed.
                 if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                    self.handle_stylesheet_url();
+                    self.handle_stylesheet_url(cx);
                 }
             },
             local_name!("as") => {
                 // https://html.spec.whatwg.org/multipage/#link-type-preload
                 // When the as attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
-                if self.relations.get().contains(LinkRelations::PRELOAD) {
-                    if let AttributeMutation::Set(Some(_), _) = mutation {
-                        self.handle_preload_url();
-                    }
+                if self.relations.get().contains(LinkRelations::PRELOAD) &&
+                    let AttributeMutation::Set(Some(_), _) = mutation
+                {
+                    self.handle_preload_url();
                 }
             },
             local_name!("type") => {
@@ -379,7 +378,7 @@ impl VirtualMethods for HTMLLinkElement {
                 //
                 // TODO: Match Content-Type metadata to check if it needs to be updated
                 if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                    self.handle_stylesheet_url();
+                    self.handle_stylesheet_url(cx);
                 }
 
                 // https://html.spec.whatwg.org/multipage/#link-type-preload
@@ -407,21 +406,20 @@ impl VirtualMethods for HTMLLinkElement {
                         },
                         _ => {},
                     };
-                } else if self.relations.get().contains(LinkRelations::STYLESHEET) {
-                    if let Some(ref stylesheet) = *self.stylesheet.borrow_mut() {
-                        let document = self.owner_document();
-                        let shared_lock = document.style_shared_lock().clone();
-                        let mut guard = shared_lock.write();
-                        let media = stylesheet.media.write_with(&mut guard);
-                        match mutation {
-                            AttributeMutation::Set(..) => {
-                                *media =
-                                    MediaList::parse_media_list(&attr.value(), document.window())
-                            },
-                            AttributeMutation::Removed => *media = StyleMediaList::empty(),
-                        };
-                        self.owner_document().invalidate_stylesheets();
-                    }
+                } else if self.relations.get().contains(LinkRelations::STYLESHEET) &&
+                    let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
+                {
+                    let document = self.owner_document();
+                    let shared_lock = document.style_shared_lock().clone();
+                    let mut guard = shared_lock.write();
+                    let media = stylesheet.media.write_with(&mut guard);
+                    match mutation {
+                        AttributeMutation::Set(..) => {
+                            *media = MediaList::parse_media_list(&attr.value(), document.window())
+                        },
+                        AttributeMutation::Removed => *media = StyleMediaList::empty(),
+                    };
+                    self.owner_document().invalidate_stylesheets();
                 }
 
                 let matches_media_environment =
@@ -456,7 +454,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // https://html.spec.whatwg.org/multipage/#link-type-stylesheet:fetch-and-process-the-linked-resource
                 // > When the external resource link's link element becomes browsing-context connected.
                 if relations.contains(LinkRelations::STYLESHEET) {
-                    self.handle_stylesheet_url();
+                    self.handle_stylesheet_url(cx);
                 }
 
                 if relations.contains(LinkRelations::ICON) {
@@ -662,7 +660,7 @@ impl HTMLLinkElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#concept-link-obtain>
-    fn handle_stylesheet_url(&self) {
+    fn handle_stylesheet_url(&self, cx: &mut js::context::JSContext) {
         let document = self.owner_document();
         if document.browsing_context().is_none() {
             return;
@@ -721,6 +719,7 @@ impl HTMLLinkElement {
         self.pending_loads.set(0);
 
         ElementStylesheetLoader::load_with_element(
+            cx,
             self.upcast(),
             StylesheetContextSource::LinkElement,
             media,
@@ -736,10 +735,10 @@ impl HTMLLinkElement {
         if is_removal {
             self.is_explicitly_enabled.set(true);
         }
-        if let Some(stylesheet) = self.get_stylesheet() {
-            if stylesheet.set_disabled(!is_removal) {
-                self.stylesheet_list_owner().invalidate_stylesheets();
-            }
+        if let Some(stylesheet) = self.get_stylesheet() &&
+            stylesheet.set_disabled(!is_removal)
+        {
+            self.stylesheet_list_owner().invalidate_stylesheets();
         }
     }
 
@@ -1097,11 +1096,8 @@ impl StylesheetOwner for HTMLLinkElement {
                 .is_some_and(|list| list.Contains("render".into()))
     }
 
-    fn referrer_policy(&self) -> ReferrerPolicy {
-        if self
-            .RelList(CanGc::deprecated_note())
-            .Contains("noreferrer".into())
-        {
+    fn referrer_policy(&self, cx: &mut js::context::JSContext) -> ReferrerPolicy {
+        if self.RelList(cx).Contains("noreferrer".into()) {
             return ReferrerPolicy::NoReferrer;
         }
 
@@ -1177,9 +1173,10 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
     make_bool_setter!(SetDisabled, "disabled");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-link-rellist>
-    fn RelList(&self, can_gc: CanGc) -> DomRoot<DOMTokenList> {
+    fn RelList(&self, cx: &mut js::context::JSContext) -> DomRoot<DOMTokenList> {
         self.rel_list.or_init(|| {
             DOMTokenList::new(
+                cx,
                 self.upcast(),
                 &local_name!("rel"),
                 Some(vec![
@@ -1199,7 +1196,6 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
                     Atom::from("prerender"),
                     Atom::from("stylesheet"),
                 ]),
-                can_gc,
             )
         })
     }
@@ -1223,13 +1219,13 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
     make_setter!(SetTarget, "target");
 
     /// <https://html.spec.whatwg.org/multipage/#attr-link-blocking>
-    fn Blocking(&self, can_gc: CanGc) -> DomRoot<DOMTokenList> {
+    fn Blocking(&self, cx: &mut js::context::JSContext) -> DomRoot<DOMTokenList> {
         self.blocking.or_init(|| {
             DOMTokenList::new(
+                cx,
                 self.upcast(),
                 &local_name!("blocking"),
                 Some(vec![Atom::from("render")]),
-                can_gc,
             )
         })
     }

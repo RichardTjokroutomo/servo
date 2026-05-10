@@ -16,6 +16,7 @@ use js::realm::CurrentRealm;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::{ArrayBufferView, ArrayBufferViewU8};
 use script_bindings::cell::DomRefCell;
+use script_bindings::reflector::{Reflector, reflect_dom_object, reflect_dom_object_with_proto};
 use script_bindings::root::Dom;
 
 use super::byteteereadintorequest::ByteTeeReadIntoRequest;
@@ -27,16 +28,14 @@ use crate::dom::bindings::codegen::Bindings::ReadableStreamBYOBReaderBinding::{
 };
 use crate::dom::bindings::codegen::Bindings::ReadableStreamDefaultReaderBinding::ReadableStreamReadResult;
 use crate::dom::bindings::error::{Error, ErrorToJsval, Fallible};
-use crate::dom::bindings::reflector::{
-    DomGlobal, Reflector, reflect_dom_object, reflect_dom_object_with_proto,
-};
+use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::stream::readablestream::ReadableStream;
-use crate::realms::{InRealm, enter_realm};
+use crate::realms::enter_auto_realm;
 use crate::script_runtime::CanGc;
 
 /// <https://streams.spec.whatwg.org/#read-into-request>
@@ -66,13 +65,11 @@ impl ReadIntoRequest {
             },
             ReadIntoRequest::ByteTee {
                 byte_tee_read_into_request,
-            } => {
-                byte_tee_read_into_request.enqueue_chunk_steps(
-                    HeapBufferSource::<ArrayBufferViewU8>::new(BufferSource::ArrayBufferView(
-                        RootedTraceableBox::from_box(Heap::boxed(chunk.get().to_object())),
-                    )),
-                )
-            },
+            } => byte_tee_read_into_request.enqueue_chunk_steps(RootedTraceableBox::new(
+                HeapBufferSource::<ArrayBufferViewU8>::new(BufferSource::ArrayBufferView(
+                    Heap::boxed(chunk.get().to_object()),
+                )),
+            )),
         }
     }
 
@@ -107,10 +104,10 @@ impl ReadIntoRequest {
                 Some(chunk) => byte_tee_read_into_request
                     .close_steps(
                         cx,
-                        Some(HeapBufferSource::<ArrayBufferViewU8>::new(
-                            BufferSource::ArrayBufferView(RootedTraceableBox::from_box(
-                                Heap::boxed(chunk.get().to_object()),
-                            )),
+                        Some(RootedTraceableBox::new(
+                            HeapBufferSource::<ArrayBufferViewU8>::new(
+                                BufferSource::ArrayBufferView(Heap::boxed(chunk.get().to_object())),
+                            ),
                         )),
                     )
                     .expect("close steps should not fail"),
@@ -323,7 +320,7 @@ impl ReadableStreamBYOBReader {
     pub(crate) fn read(
         &self,
         cx: &mut JSContext,
-        view: HeapBufferSource<ArrayBufferViewU8>,
+        view: &HeapBufferSource<ArrayBufferViewU8>,
         min: u64,
         read_into_request: &ReadIntoRequest,
     ) {
@@ -363,6 +360,7 @@ impl ReadableStreamBYOBReader {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn byte_tee_append_native_handler_to_closed_promise(
         &self,
+        cx: &mut JSContext,
         branch_1: &ReadableStream,
         branch_2: &ReadableStream,
         canceled_1: Rc<Cell<bool>>,
@@ -370,7 +368,6 @@ impl ReadableStreamBYOBReader {
         cancel_promise: Rc<Promise>,
         reader_version: Rc<Cell<u64>>,
         expected_version: u64,
-        can_gc: CanGc,
     ) {
         let branch_1_controller = branch_1.get_byte_controller();
 
@@ -389,15 +386,15 @@ impl ReadableStreamBYOBReader {
                 reader_version,
                 expected_version,
             })),
-            can_gc,
+            CanGc::from_cx(cx),
         );
 
-        let realm = enter_realm(&*global);
-        let comp = InRealm::Entered(&realm);
+        let mut realm = enter_auto_realm(cx, &*global);
+        let cx = &mut realm.current_realm();
 
         self.closed_promise
             .borrow()
-            .append_native_handler(&handler, comp, can_gc);
+            .append_native_handler(cx, &handler);
     }
 }
 
@@ -507,7 +504,7 @@ impl ReadableStreamBYOBReaderMethods<crate::DomTypeHolder> for ReadableStreamBYO
         let read_into_request = ReadIntoRequest::Read(promise.clone());
 
         // Perform ! ReadableStreamBYOBReaderRead(this, view, options["min"], readIntoRequest).
-        self.read(cx, view, min, &read_into_request);
+        self.read(cx, &view, min, &read_into_request);
 
         // Return promise.
         promise
