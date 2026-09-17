@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use app_units::Au;
 use fonts::{
-    FallbackFontSelectionOptions, FontContext, FontDescriptor, FontFamilyDescriptor,
-    FontSearchScope, fallback_font_families,
+    FallbackFontSelectionOptions, Font as ServoFont, FontContext, FontDescriptor,
+    FontFamilyDescriptor, FontSearchScope, fallback_font_families,
 };
 use net_traits::image_cache::FontResolver;
 use resvg::usvg::{Font, FontFamily, FontStretch, FontStyle, fontdb};
@@ -21,7 +21,6 @@ use style::values::computed::{
     FontStyle as ServoFontStyle, FontSynthesis, FontWeight, FontWidth as ServoFontWidth,
 };
 use webrender_api::FontVariation;
-use fonts::Font as ServoFont;
 
 /// Used to dynamically query fonts used in SVGs and insert them into the fontDB used when rasterizing.
 #[derive(MallocSizeOf)]
@@ -68,7 +67,10 @@ impl SvgFontResolver {
                 continue;
             };
 
-            let Some(font_ref) = self.context.font(font_template, &font_descriptor, &|_: &ServoFont| true) else {
+            let Some(font_ref) =
+                self.context
+                    .font(font_template, &font_descriptor, &|_: &ServoFont| true)
+            else {
                 continue;
             };
 
@@ -202,7 +204,10 @@ impl FontResolver for SvgFontResolver {
                 .matching_templates(&fallback_descriptor, &family);
 
             for font_template in font_templates {
-                let Some(font_ref) = self.context.font(font_template, &fallback_descriptor, &|_: &ServoFont| true) else {
+                let Some(font_ref) =
+                    self.context
+                        .font(font_template, &fallback_descriptor, &|_: &ServoFont| true)
+                else {
                     continue;
                 };
                 if !font_ref.has_glyph_for(character) {

@@ -1026,7 +1026,20 @@ impl FontGroupFamilyTemplate {
         if !template_predicate(self.template.clone()) {
             return None;
         }
-        self.font(font_context, font_descriptor, font_predicate)
+        let res = self.font(font_context, font_descriptor, font_predicate);
+
+        match res {
+            Some(font_ref) => {
+                if font_predicate(&font_ref.0) {
+                    return Some(font_ref);
+                } else {
+                    return None;
+                }
+            },
+            None => {
+                return None;
+            },
+        }
     }
 }
 
