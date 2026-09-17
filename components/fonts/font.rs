@@ -345,6 +345,7 @@ impl Font {
         descriptor: FontDescriptor,
         data: Option<FontData>,
         synthesized_small_caps: Option<FontRef>,
+        lazy_init: bool,
     ) -> Result<Font, &'static str> {
         let synthetic_bold = {
             let is_bold = descriptor.weight >= FontWeight::BOLD_THRESHOLD;
@@ -371,7 +372,11 @@ impl Font {
             handle
         };
 
-        let metrics = Arc::new(handle.metrics());
+        let mut metrics = FontMetrics::empty();
+
+        if !lazy_init {
+            metrics = Arc::new(handle.metrics());
+        }
 
         Ok(Font {
             handle,
@@ -394,6 +399,10 @@ impl Font {
     /// A unique identifier for the font, allowing comparison.
     pub fn identifier(&self) -> AtomicRef<'_, FontIdentifier> {
         self.template.identifier()
+    }
+
+    pub fn initialize_remaining_fields(&mut self) {
+        self.metrics = Arc::new(self.handle.metrics());
     }
 
     pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
@@ -829,7 +838,7 @@ impl FontGroup {
             Some(font)
         };
 
-        let font_has_glyph_and_presentation = |font: &FontRef| {
+        let font_has_glyph_and_presentation = |font: &Font| {
             // Do not select this font if it goes against our emoji preference.
             match options.presentation_preference {
                 EmojiPresentationPreference::Text if font.has_color_bitmap_or_colr_table() => {
@@ -897,7 +906,7 @@ impl FontGroup {
         // > available).
         // > Note: it does not matter whether that font actually has a glyph for the space character.
         let space_in_template = |template: FontTemplateRef| template.char_in_unicode_range(' ');
-        let font_predicate = |_: &FontRef| true;
+        let font_predicate = |_: &Font| true;
         self.find(font_context, &space_in_template, &font_predicate)
             .or_else(|| {
                 self.find_fallback_using_system_font_list(
@@ -916,7 +925,7 @@ impl FontGroup {
         &self,
         font_context: &FontContext,
         template_predicate: &impl Fn(FontTemplateRef) -> bool,
-        font_predicate: &impl Fn(&FontRef) -> bool,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         self.families
             .iter()
@@ -941,7 +950,7 @@ impl FontGroup {
         font_context: &FontContext,
         options: FallbackFontSelectionOptions,
         template_predicate: &impl Fn(FontTemplateRef) -> bool,
-        font_predicate: &impl Fn(&FontRef) -> bool,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         iter::once(FontFamilyDescriptor::default())
             .chain(
@@ -998,9 +1007,12 @@ impl FontGroupFamilyTemplate {
         &self,
         font_context: &FontContext,
         font_descriptor: &FontDescriptor,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         self.font
-            .get_or_init(|| font_context.font(self.template.clone(), font_descriptor))
+            .get_or_init(|| {
+                font_context.font(self.template.clone(), font_descriptor, font_predicate)
+            })
             .clone()
     }
 
@@ -1009,13 +1021,12 @@ impl FontGroupFamilyTemplate {
         font_context: &FontContext,
         font_descriptor: &FontDescriptor,
         template_predicate: &impl Fn(FontTemplateRef) -> bool,
-        font_predicate: &impl Fn(&FontRef) -> bool,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         if !template_predicate(self.template.clone()) {
             return None;
         }
-        self.font(font_context, font_descriptor)
-            .filter(font_predicate)
+        self.font(font_context, font_descriptor, font_predicate)
     }
 }
 
@@ -1276,7 +1287,7 @@ fn compute_variations(
 }
 
 bitflags! {
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, Default)]
     struct VariationAxes: u8 {
         /// Whether the font has any variation axes at all.
         const IS_VARIABLE = 1;

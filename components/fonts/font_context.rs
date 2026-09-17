@@ -240,11 +240,13 @@ impl FontContext {
         &self,
         font_template: FontTemplateRef,
         font_descriptor: &FontDescriptor,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         self.get_font_maybe_synthesizing_small_caps(
             font_template,
             font_descriptor,
             true, /* synthesize_small_caps */
+            font_predicate,
         )
     }
 
@@ -253,6 +255,7 @@ impl FontContext {
         font_template: FontTemplateRef,
         font_descriptor: &FontDescriptor,
         synthesize_small_caps: bool,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Option<FontRef> {
         // TODO: (Bug #3463): Currently we only support fake small-caps
         // painting. We should also support true small-caps (where the
@@ -266,6 +269,7 @@ impl FontContext {
                     font_template.clone(),
                     &small_caps_descriptor,
                     false, /* synthesize_small_caps */
+                    font_predicate,
                 )
             } else {
                 None
@@ -301,6 +305,7 @@ impl FontContext {
                 font_template,
                 font_descriptor.to_owned(),
                 synthesized_small_caps_font,
+                font_predicate,
             )
             .ok();
         fonts.insert(cache_key, font.clone());
@@ -362,13 +367,22 @@ impl FontContext {
         font_template: FontTemplateRef,
         font_descriptor: FontDescriptor,
         synthesized_small_caps: Option<FontRef>,
+        font_predicate: &impl Fn(&Font) -> bool,
     ) -> Result<FontRef, &'static str> {
-        Ok(FontRef(Arc::new(Font::new(
+        let mut font_res = Font::new(
             font_template.clone(),
             font_descriptor,
             self.get_font_data(&font_template.identifier()),
             synthesized_small_caps,
-        )?)))
+            true,
+        )?;
+
+        if font_predicate(&font_res) {
+            font_res.initialize_remaining_fields();
+            return Ok(FontRef(Arc::new(font_res)));
+        }
+
+        Err("")
     }
 
     pub(crate) fn create_font_instance_key(
