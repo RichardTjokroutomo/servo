@@ -328,7 +328,13 @@ impl malloc_size_of::MallocSizeOf for Font {
         // TODO: Collect memory usage for platform fonts and for shapers.
         // This skips the template, because they are already stored in the template cache.
 
-        self.metrics().size_of(ops) +
+        let metrics_size = if self.metrics.get().is_none() {
+            0
+        } else {
+            self.metrics().size_of(ops)
+        };
+
+        metrics_size +
             self.descriptor.size_of(ops) +
             self.cached_shape_data.read().size_of(ops) +
             self.font_instance_key
@@ -1031,15 +1037,11 @@ impl FontGroupFamilyTemplate {
             .font(font_context, font_descriptor)
             .filter(font_predicate);
 
-        match res {
-            Some(fontref_res) => {
-                fontref_res.initialize_remaining_fields();
-                return Some(fontref_res);
-            },
-            None => {
-                return None;
-            },
+        if let Some(fontref_res) = &res {
+            fontref_res.initialize_remaining_fields();
         }
+
+        res
     }
 }
 
