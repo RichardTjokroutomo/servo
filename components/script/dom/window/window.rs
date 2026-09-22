@@ -2738,6 +2738,8 @@ impl Window {
             highlighted_dom_node: document.highlighted_dom_node().map(|node| node.to_opaque()),
             halt_lcp: self.has_dispatched_scroll_event.get() ||
                 self.has_dispatched_input_event.get(),
+            paint_timing_eligible: document.paint_timing_eligible(),
+            paint_timing_info: document.paint_timing_info(),
             document_context,
             accessibility_damage,
             rooted_nodes_for_accessibility_integrity_check,
@@ -3738,14 +3740,12 @@ impl Window {
     /// Resolve the LCP candidate OpaqueNode to a DOM Element and store it on the document.
     #[expect(unsafe_code)]
     fn process_lcp_candidate_post_reflow(&self, candidate: LCPCandidate, document: &Document) {
-        let Some(node) = candidate.node else {
-            return;
-        };
-        let node_address = UntrustedNodeAddress(node.id() as *const c_void);
-        let node = unsafe { from_untrusted_node_address(node_address) };
-        if let Some(element) = DomRoot::downcast::<Element>(node) {
-            document.store_lcp_candidate(candidate, &element);
-        }
+        let element = candidate.node.and_then(|node| {
+            let node_address = UntrustedNodeAddress(node.id() as *const c_void);
+            let node = unsafe { from_untrusted_node_address(node_address) };
+            DomRoot::downcast::<Element>(node)
+        });
+        document.store_lcp_candidate(candidate, element.as_deref());
     }
 
     #[expect(unsafe_code)]
