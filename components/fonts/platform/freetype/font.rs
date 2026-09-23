@@ -32,7 +32,7 @@ const SEMI_BOLD_U16: u16 = Weight::SEMI_BOLD.value() as u16;
 
 /// Convert FreeType-style 26.6 fixed point to an [`f64`].
 fn fixed_26_dot_6_to_float(fixed: FT_F26Dot6) -> f64 {
-    fixed as f64 / 64.0
+    (fixed >> 6) as f64
 }
 
 #[derive(Debug)]
@@ -236,7 +236,7 @@ impl PlatformFontMethods for PlatformFont {
             // that the result may be interpreted as pixels in 26.6 fixed point format.
             //
             // This converts the value to a float without losing precision.
-            y_scale = freetype_metrics.y_scale as f64 / 65536.0 / 64.0;
+            y_scale = (freetype_metrics.y_scale >> 22) as f64;
 
             max_advance = (face.as_ref().max_advance_width as f64) * y_scale;
             max_ascent = (face.as_ref().ascender as f64) * y_scale;
