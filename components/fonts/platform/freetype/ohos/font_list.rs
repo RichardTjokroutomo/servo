@@ -106,9 +106,17 @@ struct FontAlias {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // NOTE: If you modify this, you need to update CACHE_REVISION under [`font_cache.rs`].
+struct FontFallback {
+    language: String, // TODO: when `for_each_variation` receives ICU's language as argument, also make this ICU lang too.
+    to: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+// NOTE: If you modify this, you need to update CACHE_REVISION under [`font_cache.rs`].
 pub(super) struct FontList {
     families: Vec<FontFamily>,
     aliases: Vec<FontAlias>,
+    fallbacks: Vec<FontFallback>,
 }
 
 fn enumerate_font_files() -> io::Result<Vec<PathBuf>> {
@@ -313,6 +321,7 @@ impl FontList {
             let font_list = FontList {
                 families: Self::detect_installed_font_families(),
                 aliases: Self::fallback_font_aliases(),
+                fallbacks: Self::generate_fallbacks(),
             };
 
             let font_list_clone = font_list.clone();
@@ -327,6 +336,7 @@ impl FontList {
             FontList {
                 families: Self::detect_installed_font_families(),
                 aliases: Self::fallback_font_aliases(),
+                fallbacks: Self::generate_fallbacks(),
             }
         })
     }
@@ -363,6 +373,20 @@ impl FontList {
                 }],
             })
             .collect()
+    }
+
+    fn generate_fallbacks() -> Vec<FontFallback> {
+        let fallbacks = vec![
+            FontFallback {
+                language: "sc".to_string(),
+                to: "HarmonyOS Sans SC".to_string(),
+            },
+            FontFallback {
+                language: "tc".to_string(),
+                to: "HarmonyOS Sans TC".to_string(),
+            },
+        ];
+        fallbacks
     }
 
     fn font_absolute_path(filename: &str) -> String {
@@ -416,6 +440,12 @@ impl FontList {
             .iter()
             .find(|family| family.from.eq_ignore_ascii_case(name))
     }
+
+    fn find_preferred_fallbacks(&self, name: &str) -> Option<&FontFallback> {
+        self.fallbacks
+            .iter()
+            .find(|family| name.to_lowercase().contains(&family.language))
+    }
 }
 
 // Functions used by SystemFontService
@@ -466,11 +496,12 @@ where
         ));
     };
 
-    if let Some(family) = FONT_LIST.find_family(family_name) {
+    if let Some(fallback_font) = FONT_LIST.find_preferred_fallbacks(family_name) &&
+        let Some(family) = FONT_LIST.find_family(&fallback_font.to)
+    {
         for font in &family.fonts {
             produce_font(font);
         }
-        return;
     }
 
     if let Some(alias) = FONT_LIST.find_alias(family_name) &&
@@ -482,6 +513,12 @@ where
                 (Some(w1), Some(w2)) if w1 == w2 => produce_font(font),
                 _ => {},
             }
+        }
+    }
+
+    if let Some(family) = FONT_LIST.find_family(family_name) {
+        for font in &family.fonts {
+            produce_font(font);
         }
     }
 }
