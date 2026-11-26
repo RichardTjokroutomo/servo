@@ -14,7 +14,7 @@ use std::sync::Arc;
 use app_units::Au;
 use dwrote::{
     DWRITE_FONT_AXIS_VALUE, DWRITE_FONT_SIMULATIONS_BOLD, DWRITE_FONT_SIMULATIONS_NONE,
-    FontCollection, FontFace, FontFile, FontSimulations,
+    DWRITE_FONT_SIMULATIONS_OBLIQUE, FontCollection, FontFace, FontFile, FontSimulations,
 };
 use euclid::default::{Point2D, Rect, Size2D};
 use fonts_traits::{FontData, LocalFontIdentifier, SkrifaFont};
@@ -210,6 +210,14 @@ impl PlatformFontMethods for PlatformFont {
         Self::new(font_face, Some(Au::from_f32_px(self.em_size * 16.)), vec![])
     }
 
+    fn copy_with_synthetic_italic(mut self) -> Result<Self, &'static str> {
+        let font_face = self
+            .face
+            .0
+            .create_font_face_with_simulations(DWRITE_FONT_SIMULATIONS_OBLIQUE);
+        Self::new(font_face, Some(Au::from_f32_px(self.em_size * 16.)), vec![])
+    }
+
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         let Ok(glyphs) = self.face.glyph_indices(&[codepoint as u32]) else {
             return None;
@@ -234,15 +242,6 @@ impl PlatformFontMethods for PlatformFont {
             return None;
         };
         Some((glyph_metric.advanceWidth as f32 * self.scaled_du_to_px) as FractionalPixel)
-    }
-
-    fn glyph_h_kerning(&self, first_glyph: GlyphId, second_glyph: GlyphId) -> FractionalPixel {
-        let adjustment = self
-            .face
-            .glyph_pair_kerning_adjustment(first_glyph as u16, second_glyph as u16)
-            .unwrap_or_default();
-
-        (adjustment as f32 * self.scaled_du_to_px) as FractionalPixel
     }
 
     fn metrics(&self) -> FontMetrics {

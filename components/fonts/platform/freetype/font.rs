@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use app_units::Au;
 use euclid::default::{Point2D, Rect, Size2D};
-use fonts_traits::{FontDataAndIndex, FontIdentifier, LocalFontIdentifier, SkrifaFont};
+use fonts_traits::{
+    FontDataAndIndex, FontDescriptor, FontIdentifier, LocalFontIdentifier, SkrifaFont,
+};
 use freetype_sys::{
-    FT_F26Dot6, FT_Get_Char_Index, FT_Get_Kerning, FT_GlyphSlot, FT_KERNING_DEFAULT,
-    FT_LOAD_DEFAULT, FT_LOAD_NO_HINTING, FT_Load_Glyph, FT_Size_Metrics, FT_SizeRec, FT_UInt,
-    FT_ULong, FT_Vector,
+    FT_F26Dot6, FT_Get_Char_Index, FT_GlyphSlot, FT_LOAD_DEFAULT, FT_LOAD_NO_HINTING,
+    FT_Load_Glyph, FT_Size_Metrics, FT_SizeRec, FT_UInt, FT_ULong,
 };
 use log::debug;
 use memmap2::Mmap;
@@ -20,7 +21,11 @@ use read_fonts::TableProvider;
 use read_fonts::types::Tag;
 use skrifa::font::Blob;
 use style::Zero;
-use webrender_api::{FontInstanceFlags, FontInstancePlatformOptions, FontVariation};
+use style::computed_values::font_style::T as FontStyle;
+use webrender_api::{
+    FontInstanceFlags, FontInstanceOptions, FontInstancePlatformOptions, FontVariation,
+    SyntheticItalics,
+};
 
 use super::library_handle::FreeTypeLibraryHandle;
 use crate::FontData;
@@ -58,6 +63,7 @@ pub struct PlatformFont {
     actual_face_size: Au,
     variations: Vec<FontVariation>,
     synthetic_bold: bool,
+    synthetic_italic: bool,
     /// A member that allows using `skrifa` to read values from this font.
     /// Eventually, this should be eliminated in favor of reading the shared
     /// `SkrifaFont` from the `Font` itself.
@@ -85,6 +91,7 @@ impl PlatformFontMethods for PlatformFont {
             actual_face_size,
             variations: vec![],
             synthetic_bold: false,
+            synthetic_italic: false,
             data_and_index: FontDataAndIndex {
                 data: font_data.clone(),
                 index: 0,
@@ -123,6 +130,7 @@ impl PlatformFontMethods for PlatformFont {
             actual_face_size,
             variations: vec![],
             synthetic_bold: false,
+            synthetic_italic: false,
             data_and_index: FontDataAndIndex {
                 data: FontData::MemoryMapped(memory_mapped_font_data),
                 index: font_identifier.index(),
@@ -155,6 +163,11 @@ impl PlatformFontMethods for PlatformFont {
         Ok(self)
     }
 
+    fn copy_with_synthetic_italic(mut self) -> Result<Self, &'static str> {
+        self.synthetic_italic = true;
+        Ok(self)
+    }
+
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         let face = self.face.lock();
 
@@ -170,22 +183,6 @@ impl PlatformFontMethods for PlatformFont {
                 None
             }
         }
-    }
-
-    fn glyph_h_kerning(&self, first_glyph: GlyphId, second_glyph: GlyphId) -> FractionalPixel {
-        let face = self.face.lock();
-
-        let mut delta = FT_Vector { x: 0, y: 0 };
-        unsafe {
-            FT_Get_Kerning(
-                face.as_ptr(),
-                first_glyph,
-                second_glyph,
-                FT_KERNING_DEFAULT,
-                &mut delta,
-            );
-        }
-        fixed_26_dot_6_to_float(delta.x) * self.unscalable_font_metrics_scale()
     }
 
     fn glyph_h_advance(&self, glyph: GlyphId) -> Option<FractionalPixel> {
@@ -391,6 +388,23 @@ impl PlatformFontMethods for PlatformFont {
         }
 
         flags
+    }
+
+    fn webrender_font_instance_options(&self, descriptor: &FontDescriptor) -> FontInstanceOptions {
+        let angle = if descriptor.style == FontStyle::ITALIC {
+            FontStyle::DEFAULT_OBLIQUE_DEGREES as f32
+        } else {
+            descriptor.style.oblique_degrees()
+        };
+        FontInstanceOptions {
+            flags: self.webrender_font_instance_flags(),
+            synthetic_italics: if self.synthetic_italic {
+                SyntheticItalics::from_degrees(angle)
+            } else {
+                SyntheticItalics::disabled()
+            },
+            ..Default::default()
+        }
     }
 
     fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {

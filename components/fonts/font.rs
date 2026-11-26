@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::borrow::ToOwned;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::Deref;
@@ -12,11 +11,11 @@ use std::{iter, str};
 use app_units::Au;
 use atomic_refcell::AtomicRef;
 use bitflags::bitflags;
-use euclid::default::{Point2D, Rect};
+use euclid::default::Rect;
 use euclid::num::Zero;
 use font_types::{BigEndian, NameId};
-use fonts_traits::tag::{CBDT, COLR, GPOS, GSUB, ITAL, KERN, SBIX, SLNT, WDTH, WGHT};
-use fonts_traits::{FontDescriptor, SkrifaFont};
+use fonts_traits::tag::{CBDT, COLR, ITAL, SBIX, SLNT, WDTH, WGHT};
+use fonts_traits::{FontDescriptor, FontTemplateDescriptor, SkrifaFont};
 use icu_locale_core::subtags::Language;
 use icu_properties::props::{EnumeratedProperty, GeneralCategory};
 use log::debug;
@@ -30,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use servo_base::id::PainterId;
 use servo_base::text::{UnicodeBlock, UnicodeBlockMethod};
 use skrifa::font::Variation;
-use skrifa::font::attribute::Weight;
+use skrifa::font::attribute::{Style, Weight};
 use smallvec::SmallVec;
 use style::Atom;
 use style::computed_values::font_optical_sizing::T as FontOpticalSizing;
@@ -41,12 +40,13 @@ use style::values::computed::font::{
     FamilyName, FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
 };
 use style::values::computed::{
-    FontFeatureSettings, FontStyle, FontSynthesis, FontVariantEastAsian, FontVariantLigatures,
-    FontVariantNumeric, FontWeight,
+    FontFeatureSettings, FontStyle, FontSynthesis, FontSynthesisStyle, FontVariantEastAsian,
+    FontVariantLigatures, FontVariantNumeric, FontWeight,
 };
 use unicode_script::Script;
 use webrender_api::{
-    FontInstanceFlags, FontInstanceKey, FontInstancePlatformOptions, FontVariation,
+    FontInstanceFlags, FontInstanceKey, FontInstanceOptions, FontInstancePlatformOptions,
+    FontVariation,
 };
 
 use crate::font_context::SkrifaFontCache;
@@ -56,7 +56,7 @@ use crate::platform::font_list::fallback_font_families;
 use crate::{
     EmojiPresentationPreference, FallbackFontSelectionOptions, FontContext, FontData,
     FontDataAndIndex, FontDataError, FontIdentifier, FontTemplateRef, FontTemplateRefMethods,
-    GlyphId, LocalFontIdentifier, ShapedGlyph, ShapedText, Shaper, compute_used_font_features,
+    GlyphId, LocalFontIdentifier, ShapedText, Shaper, compute_used_font_features,
 };
 pub const LAST_RESORT_GLYPH_ADVANCE: FractionalPixel = 10.0;
 
@@ -122,9 +122,10 @@ pub trait PlatformFontMethods: Sized {
     /// returned font is `self`.
     fn copy_with_synthetic_bold(self) -> Result<Self, &'static str>;
 
+    fn copy_with_synthetic_italic(self) -> Result<Self, &'static str>;
+
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId>;
     fn glyph_h_advance(&self, _: GlyphId) -> Option<FractionalPixel>;
-    fn glyph_h_kerning(&self, glyph0: GlyphId, glyph1: GlyphId) -> FractionalPixel;
 
     fn metrics(&self) -> FontMetrics;
     fn table_for_tag(&self, _: Tag) -> Option<FontTable>;
@@ -132,6 +133,14 @@ pub trait PlatformFontMethods: Sized {
 
     /// Get the necessary [`FontInstanceFlags`] for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
+
+    /// Get the necessary [`FontInstanceOptions`] for this font.
+    fn webrender_font_instance_options(&self, _descriptor: &FontDescriptor) -> FontInstanceOptions {
+        FontInstanceOptions {
+            flags: self.webrender_font_instance_flags(),
+            ..Default::default()
+        }
+    }
 
     /// Get the necessary [`FontInstancePlatformOptions`] for this font.
     fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
@@ -240,14 +249,6 @@ pub struct Font {
     /// This is cached, because getting table data is expensive.
     has_color_bitmap_or_colr_table: OnceLock<bool>,
 
-    /// Whether or not this font can do fast shaping, ie whether or not it has
-    /// a kern table, but no GSUB and GPOS tables. When this is true, Servo will
-    /// shape Latin horizontal left-to-right text without using Harfbuzz.
-    ///
-    /// FIXME: This should be removed entirely in favor of better caching if necessary.
-    /// See <https://github.com/servo/servo/pull/11273#issuecomment-222332873>.
-    can_do_fast_shaping: OnceLock<bool>,
-
     /// The family name of the font.
     ///
     /// This is the name as it is declared in the `name` table, *not* the name provided by the system
@@ -310,7 +311,6 @@ impl Font {
         let variation_axes = servo_config::pref!(layout_css_font_variations_enabled)
             .then(|| VariationAxes::from_skrifa_font(&skrifa_font))
             .unwrap_or_else(VariationAxes::empty);
-
         // Either apply variations or font synthesis, but not both. Variable fonts do not
         // count as font synthesis and their use is not affected by the font-synthesis
         // property. See <https://www.w3.org/TR/css-fonts-4/#font-synthesis-intro>.
@@ -329,14 +329,37 @@ impl Font {
                     .build()
                     .into(),
             );
-        } else {
+        }
+        // Apple's TrueType reference manual (https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6fvar.html)
+        // does not mention that any axis tag is mandatory. Therefore, there is no guarantee that any axis tag exists
+        // even if a font is already known to be a variable font.
+        //
+        // As an additional note, the reference manual did mention the following: 'A set of "standard" axis tags has been defined by Apple.
+        // Other tags may be defined, but should be registered with Apple DTS (Developer Technical Support).'
+        //
+        // The "standard" axis tags do include `wght` and `slnt` tags, but it is rather ambiguous what "standard" (with quotation) means,
+        // so it cannot be used as a hard guarantee that "standard" axis tags must exist in TrueType fonts.
+        {
             let template_descriptor = template.descriptor();
-            let apply_synthetic_bold = descriptor.weight >= FontWeight::BOLD_THRESHOLD &&
-                matches!(descriptor.synthesis_weight, FontSynthesis::Auto) &&
-                template_descriptor.weight.1 < FontWeight::BOLD_THRESHOLD &&
-                skrifa_font.default_attributes().weight < Weight::SEMI_BOLD;
-            if apply_synthetic_bold {
+            if !variation_axes.contains(VariationAxes::WGHT) &&
+                Font::apply_synthetic_bold_if_needed(
+                    &descriptor,
+                    &template_descriptor,
+                    &skrifa_font,
+                )
+            {
                 handle = handle.copy_with_synthetic_bold()?;
+            }
+
+            if !(variation_axes.contains(VariationAxes::ITAL) ||
+                variation_axes.contains(VariationAxes::SLNT)) &&
+                Font::apply_synthetic_italic_if_needed(
+                    &descriptor,
+                    &template_descriptor,
+                    &skrifa_font,
+                )
+            {
+                handle = handle.copy_with_synthetic_italic()?;
             }
         }
 
@@ -353,9 +376,33 @@ impl Font {
             font_instance_key: Default::default(),
             synthesized_small_caps,
             has_color_bitmap_or_colr_table: OnceLock::new(),
-            can_do_fast_shaping: OnceLock::new(),
             family_name: Default::default(),
         })
+    }
+
+    fn apply_synthetic_bold_if_needed(
+        descriptor: &FontDescriptor,
+        template_descriptor: &FontTemplateDescriptor,
+        skrifa_font: &SkrifaFont,
+    ) -> bool {
+        descriptor.weight >= FontWeight::BOLD_THRESHOLD &&
+            matches!(descriptor.synthesis_weight, FontSynthesis::Auto) &&
+            template_descriptor.weight.1 < FontWeight::BOLD_THRESHOLD &&
+            skrifa_font.default_attributes().weight < Weight::SEMI_BOLD
+    }
+
+    fn apply_synthetic_italic_if_needed(
+        descriptor: &FontDescriptor,
+        template_descriptor: &FontTemplateDescriptor,
+        skrifa_font: &SkrifaFont,
+    ) -> bool {
+        descriptor.style != FontStyle::NORMAL &&
+            (matches!(descriptor.synthesis_style, FontSynthesisStyle::Auto) ||
+                (matches!(descriptor.synthesis_style, FontSynthesisStyle::ObliqueOnly) &&
+                    matches!(descriptor.style, FontStyle::OBLIQUE))) &&
+            (template_descriptor.style.0 != FontStyle::NORMAL &&
+                template_descriptor.style.1 != FontStyle::NORMAL) &&
+            skrifa_font.default_attributes().style != Style::Normal
     }
 
     /// A unique identifier for the font, allowing comparison.
@@ -372,8 +419,11 @@ impl Font {
         &self.skrifa_font
     }
 
-    pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
-        self.handle.webrender_font_instance_flags()
+    pub(crate) fn webrender_font_instance_options(
+        &self,
+        descriptor: &FontDescriptor,
+    ) -> FontInstanceOptions {
+        self.handle.webrender_font_instance_options(descriptor)
     }
 
     pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
@@ -510,70 +560,17 @@ impl Font {
             return shaped_text.clone();
         }
 
-        let glyphs = if self.can_do_fast_shaping(text, options) {
-            debug!("shape_text: Using ASCII fast path.");
-            self.shape_text_fast(text, options)
-        } else {
-            debug!("shape_text: Using Harfbuzz.");
-            self.shaper.get_or_init(|| Shaper::new(self)).shape_text(
-                self,
-                text,
-                options,
-                &lookup_key.font_features,
-            )
-        };
+        let shaped_text = Arc::new(self.shaper.get_or_init(|| Shaper::new(self)).shape_text(
+            self,
+            text,
+            options,
+            &lookup_key.font_features,
+        ));
 
-        let shaped_text = Arc::new(glyphs);
         let mut cache = self.cached_shape_data.write();
         cache.shaped_text.insert(lookup_key, shaped_text.clone());
 
         shaped_text
-    }
-
-    /// Whether not a particular text and [`ShapingOptions`] combination can use
-    /// "fast shaping" ie shaping without Harfbuzz.
-    ///
-    /// Note: This will eventually be removed.
-    pub fn can_do_fast_shaping(&self, text: &str, options: &ShapingOptions) -> bool {
-        options.script == Script::Latin &&
-            !options.flags.contains(ShapingFlags::RTL_FLAG) &&
-            *self.can_do_fast_shaping.get_or_init(|| {
-                self.table_for_tag(KERN).is_some() &&
-                    self.table_for_tag(GPOS).is_none() &&
-                    self.table_for_tag(GSUB).is_none()
-            }) &&
-            text.is_ascii()
-    }
-
-    /// Fast path for ASCII text that only needs simple horizontal LTR kerning.
-    fn shape_text_fast(&self, text: &str, options: &ShapingOptions) -> ShapedText {
-        let mut glyph_store = ShapedText::new(text.len(), false /* is_rtl */);
-        let mut prev_glyph_id = None;
-        for (string_byte_offset, byte) in text.bytes().enumerate() {
-            let character = byte as char;
-            let Some(glyph_id) = self.glyph_index(character) else {
-                continue;
-            };
-
-            let mut advance = Au::from_f64_px(self.glyph_h_advance(glyph_id));
-            let offset = prev_glyph_id.map(|prev| {
-                let h_kerning = Au::from_f64_px(self.glyph_h_kerning(prev, glyph_id));
-                advance += h_kerning;
-                Point2D::new(h_kerning, Au::zero())
-            });
-
-            let mut glyph = ShapedGlyph {
-                glyph_id,
-                string_byte_offset,
-                advance,
-                offset,
-            };
-            glyph.adjust_for_character(character, options);
-
-            glyph_store.add_glyph(character, &glyph);
-            prev_glyph_id = Some(glyph_id);
-        }
-        glyph_store
     }
 
     pub(crate) fn table_for_tag(&self, tag: Tag) -> Option<FontTable> {
@@ -621,14 +618,6 @@ impl Font {
 
     pub fn has_glyph_for(&self, codepoint: char) -> bool {
         self.glyph_index(codepoint).is_some()
-    }
-
-    pub(crate) fn glyph_h_kerning(
-        &self,
-        first_glyph: GlyphId,
-        second_glyph: GlyphId,
-    ) -> FractionalPixel {
-        self.handle.glyph_h_kerning(first_glyph, second_glyph)
     }
 
     pub fn glyph_h_advance(&self, glyph_id: GlyphId) -> FractionalPixel {
@@ -1304,15 +1293,20 @@ bitflags! {
         /// Whether the font has any variation axes at all.
         const IS_VARIABLE = 1;
 
-        /// Whether the font as a `ital` axis.
+        /// Whether the font has a `ital` axis.
         ///
         /// Never set without `IS_VARIABLE`.
         const ITAL = 1 << 1;
 
-        /// Whether the font as a `slnt` axis.
+        /// Whether the font has a `slnt` axis.
         ///
         /// Never set without `IS_VARIABLE`.
         const SLNT = 1 << 2;
+
+        /// Whether the font has a `wght` axis.
+        ///
+        /// Never set without `IS_VARIABLE`
+        const WGHT = 1 << 3;
     }
 }
 
@@ -1327,6 +1321,7 @@ impl VariationAxes {
             match axis.tag() {
                 ITAL => result |= VariationAxes::ITAL,
                 SLNT => result |= VariationAxes::SLNT,
+                WGHT => result |= VariationAxes::WGHT,
                 _ => {},
             }
         }
