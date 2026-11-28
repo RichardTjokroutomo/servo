@@ -46,7 +46,7 @@ use style::values::computed::{
 use unicode_script::Script;
 use webrender_api::{
     FontInstanceFlags, FontInstanceKey, FontInstanceOptions, FontInstancePlatformOptions,
-    FontVariation,
+    FontVariation, SyntheticItalics,
 };
 
 use crate::font_context::SkrifaFontCache;
@@ -122,7 +122,12 @@ pub trait PlatformFontMethods: Sized {
     /// returned font is `self`.
     fn copy_with_synthetic_bold(self) -> Result<Self, &'static str>;
 
-    fn copy_with_synthetic_italic(self) -> Result<Self, &'static str>;
+    /// Create a platform font with synthetic oblique from an existing font.
+    ///
+    /// `self` is consumed to work around platform differences. On some platforms, making a font
+    /// have synthetic oblique requires creating an entirely new font face, whereas on others the
+    /// returned font is `self`.
+    fn copy_with_synthetic_oblique(self) -> Result<Self, &'static str>;
 
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId>;
     fn glyph_h_advance(&self, _: GlyphId) -> Option<FractionalPixel>;
@@ -134,14 +139,6 @@ pub trait PlatformFontMethods: Sized {
     /// Get the necessary [`FontInstanceFlags`] for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
 
-    /// Get the necessary [`FontInstanceOptions`] for this font.
-    fn webrender_font_instance_options(&self, _descriptor: &FontDescriptor) -> FontInstanceOptions {
-        FontInstanceOptions {
-            flags: self.webrender_font_instance_flags(),
-            ..Default::default()
-        }
-    }
-
     /// Get the necessary [`FontInstancePlatformOptions`] for this font.
     fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
         Default::default()
@@ -149,6 +146,12 @@ pub trait PlatformFontMethods: Sized {
 
     /// Return all the variation values that the font was instantiated with.
     fn variations(&self) -> &[FontVariation];
+
+    /// Return the value of the `synthetic_bold` field.
+    fn synthetic_bold(&self) -> bool;
+
+    /// Return the value of the `synthetic_oblique` field.
+    fn synthetic_oblique(&self) -> bool;
 }
 
 // Used to abstract over the shaper's choice of fixed int representation.
@@ -311,9 +314,7 @@ impl Font {
         let variation_axes = servo_config::pref!(layout_css_font_variations_enabled)
             .then(|| VariationAxes::from_skrifa_font(&skrifa_font))
             .unwrap_or_else(VariationAxes::empty);
-        // Either apply variations or font synthesis, but not both. Variable fonts do not
-        // count as font synthesis and their use is not affected by the font-synthesis
-        // property. See <https://www.w3.org/TR/css-fonts-4/#font-synthesis-intro>.
+
         let mut original_skrifa_font = None;
         if variation_axes.contains(VariationAxes::IS_VARIABLE) {
             let used_variations = compute_variations(&descriptor, &template, variation_axes);
@@ -330,36 +331,31 @@ impl Font {
                     .into(),
             );
         }
-        // Apple's TrueType reference manual (https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6fvar.html)
-        // does not mention that any axis tag is mandatory. Therefore, there is no guarantee that any axis tag exists
-        // even if a font is already known to be a variable font.
+
+        // OpenType specifications (https://learn.microsoft.com/en-us/typography/opentype/spec/fvar) doesn't mention that any axis tag
+        // (i.e. 'wght', 'ital', etc.) is mandatory. This means that even if an OpenType font is a variable font, we cannot assume that
+        // the font can provide bolded or italicized typeface.
         //
-        // As an additional note, the reference manual did mention the following: 'A set of "standard" axis tags has been defined by Apple.
-        // Other tags may be defined, but should be registered with Apple DTS (Developer Technical Support).'
-        //
-        // The "standard" axis tags do include `wght` and `slnt` tags, but it is rather ambiguous what "standard" (with quotation) means,
-        // so it cannot be used as a hard guarantee that "standard" axis tags must exist in TrueType fonts.
+        // Therefore, add the following checks: if we need a bolded typeface, check if `wght` axis exists. If it doesn't exist, apply synthetic bold.
+        // Similarly, if we need an italicized typeface, check if either the `ital` or `slnt` axes exist. If both of them don't exist, apply synthetic oblique.
         {
             let template_descriptor = template.descriptor();
-            if !variation_axes.contains(VariationAxes::WGHT) &&
-                Font::apply_synthetic_bold_if_needed(
-                    &descriptor,
-                    &template_descriptor,
-                    &skrifa_font,
-                )
-            {
+            if Font::apply_synthetic_bold_if_needed(
+                &descriptor,
+                &template_descriptor,
+                &skrifa_font,
+                &variation_axes,
+            ) {
                 handle = handle.copy_with_synthetic_bold()?;
             }
 
-            if !(variation_axes.contains(VariationAxes::ITAL) ||
-                variation_axes.contains(VariationAxes::SLNT)) &&
-                Font::apply_synthetic_italic_if_needed(
-                    &descriptor,
-                    &template_descriptor,
-                    &skrifa_font,
-                )
-            {
-                handle = handle.copy_with_synthetic_italic()?;
+            if Font::apply_synthetic_oblique_if_needed(
+                &descriptor,
+                &template_descriptor,
+                &skrifa_font,
+                &variation_axes,
+            ) {
+                handle = handle.copy_with_synthetic_oblique()?;
             }
         }
 
@@ -384,24 +380,29 @@ impl Font {
         descriptor: &FontDescriptor,
         template_descriptor: &FontTemplateDescriptor,
         skrifa_font: &SkrifaFont,
+        variation_axes: &VariationAxes,
     ) -> bool {
-        descriptor.weight >= FontWeight::BOLD_THRESHOLD &&
+        !variation_axes.contains(VariationAxes::WGHT) &&
+            descriptor.weight >= FontWeight::BOLD_THRESHOLD &&
             matches!(descriptor.synthesis_weight, FontSynthesis::Auto) &&
             template_descriptor.weight.1 < FontWeight::BOLD_THRESHOLD &&
             skrifa_font.default_attributes().weight < Weight::SEMI_BOLD
     }
 
-    fn apply_synthetic_italic_if_needed(
+    fn apply_synthetic_oblique_if_needed(
         descriptor: &FontDescriptor,
         template_descriptor: &FontTemplateDescriptor,
         skrifa_font: &SkrifaFont,
+        variation_axes: &VariationAxes,
     ) -> bool {
-        descriptor.style != FontStyle::NORMAL &&
+        !(variation_axes.contains(VariationAxes::ITAL) ||
+            variation_axes.contains(VariationAxes::SLNT)) &&
+            descriptor.style != FontStyle::NORMAL &&
             (matches!(descriptor.synthesis_style, FontSynthesisStyle::Auto) ||
                 (matches!(descriptor.synthesis_style, FontSynthesisStyle::ObliqueOnly) &&
                     matches!(descriptor.style, FontStyle::OBLIQUE))) &&
-            (template_descriptor.style.0 != FontStyle::NORMAL &&
-                template_descriptor.style.1 != FontStyle::NORMAL) &&
+            (template_descriptor.style.0 == FontStyle::NORMAL &&
+                template_descriptor.style.1 == FontStyle::NORMAL) &&
             skrifa_font.default_attributes().style != Style::Normal
     }
 
@@ -419,11 +420,24 @@ impl Font {
         &self.skrifa_font
     }
 
-    pub(crate) fn webrender_font_instance_options(
+    pub fn webrender_font_instance_options(
         &self,
         descriptor: &FontDescriptor,
     ) -> FontInstanceOptions {
-        self.handle.webrender_font_instance_options(descriptor)
+        let angle = if descriptor.style == FontStyle::ITALIC {
+            FontStyle::DEFAULT_OBLIQUE_DEGREES as f32
+        } else {
+            descriptor.style.oblique_degrees()
+        };
+        FontInstanceOptions {
+            flags: self.handle.webrender_font_instance_flags(),
+            synthetic_italics: if self.handle.synthetic_oblique() {
+                SyntheticItalics::from_degrees(angle)
+            } else {
+                SyntheticItalics::disabled()
+            },
+            ..Default::default()
+        }
     }
 
     pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {

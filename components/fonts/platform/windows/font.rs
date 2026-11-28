@@ -210,7 +210,7 @@ impl PlatformFontMethods for PlatformFont {
         Self::new(font_face, Some(Au::from_f32_px(self.em_size * 16.)), vec![])
     }
 
-    fn copy_with_synthetic_italic(mut self) -> Result<Self, &'static str> {
+    fn copy_with_synthetic_oblique(mut self) -> Result<Self, &'static str> {
         let font_face = self
             .face
             .0
@@ -347,6 +347,14 @@ impl PlatformFontMethods for PlatformFont {
 
     fn variations(&self) -> &[FontVariation] {
         &self.variations
+    }
+
+    fn synthetic_bold(&self) -> bool {
+        self.synthetic_bold
+    }
+
+    fn synthetic_oblique(&self) -> bool {
+        self.synthetic_oblique
     }
 
     fn create_skrifa_font(&self) -> Option<Arc<SkrifaFont>> {

@@ -104,7 +104,7 @@ impl SystemFontServiceProxy {
         identifier: FontIdentifier,
         size: Au,
         font_instance_options: FontInstanceOptions,
-        options: FontInstancePlatformOptions,
+        font_instance_platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
         painter_id: PainterId,
     ) -> FontInstanceKey {
@@ -116,7 +116,7 @@ impl SystemFontServiceProxy {
                 identifier,
                 size,
                 font_instance_options,
-                options,
+                font_instance_platform_options,
                 variations,
                 response_chan,
             ))

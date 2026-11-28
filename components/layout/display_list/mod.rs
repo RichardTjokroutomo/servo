@@ -1236,6 +1236,12 @@ impl Fragment {
             (synthetic_skew.abs() * (font_metrics.ascent + font_metrics.descent).to_f32_px())
                 .ceil(),
         );
+        // Gecko gets the text bounding box based on the ink overflow bounds. Since
+        // we don't need to calculate this yet (as we do not implement `contain:
+        // paint`), we just need to make sure these boundaries are big enough to
+        // contain the inked portion of the glyphs. We assume that the descent and
+        // ascent are big enough and then just expand the advance-based boundaries by
+        // twice the size of the biggest advance in the advance dimention.
         let glyph_bounds = rect
             .inflate(largest_advance * 2 + synthetic_overhang, Au::zero())
             .to_webrender();

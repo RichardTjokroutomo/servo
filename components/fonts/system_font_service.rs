@@ -51,7 +51,7 @@ struct FontInstancesMapKey {
     variations: Vec<FontVariation>,
     painter_id: PainterId,
     font_instance_options: FontInstanceOptions,
-    options: FontInstancePlatformOptions,
+    font_instance_platform_options: FontInstancePlatformOptions,
 }
 
 /// The system font service. There is one of these for every Servo instance. This is a thread,
@@ -136,7 +136,7 @@ impl SystemFontService {
                     identifier,
                     pt_size,
                     font_instance_options,
-                    options,
+                    font_instance_platform_options,
                     variations,
                     result,
                 ) => {
@@ -145,7 +145,7 @@ impl SystemFontService {
                         identifier,
                         pt_size,
                         font_instance_options,
-                        options,
+                        font_instance_platform_options,
                         variations,
                     ));
                 },
@@ -271,7 +271,7 @@ impl SystemFontService {
         identifier: FontIdentifier,
         pt_size: Au,
         font_instance_options: FontInstanceOptions,
-        options: FontInstancePlatformOptions,
+        font_instance_platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
     ) -> FontInstanceKey {
         self.fetch_font_keys_if_needed(painter_id);
@@ -301,7 +301,7 @@ impl SystemFontService {
             variations: variations.clone(),
             painter_id,
             font_instance_options,
-            options,
+            font_instance_platform_options,
         };
         *self.font_instances.entry(entry_key).or_insert_with(|| {
             let font_instance_key = self
@@ -315,7 +315,7 @@ impl SystemFontService {
                 font_key,
                 pt_size.to_f32_px(),
                 font_instance_options,
-                options,
+                font_instance_platform_options,
                 variations,
             );
             font_instance_key

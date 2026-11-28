@@ -1251,7 +1251,7 @@ impl Painter {
         font_key: FontKey,
         size: f32,
         font_instance_options: FontInstanceOptions,
-        platform_options: FontInstancePlatformOptions,
+        font_instance_platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
     ) {
         let variations = if pref!(layout_css_font_variations_enabled) {
@@ -1267,7 +1267,7 @@ impl Painter {
             font_key,
             size,
             Some(font_instance_options),
-            Some(platform_options),
+            Some(font_instance_platform_options),
             variations,
         );
 

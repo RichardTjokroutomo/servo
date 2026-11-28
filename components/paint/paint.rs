@@ -553,7 +553,7 @@ impl Paint {
                 font_key,
                 size,
                 font_instance_options,
-                platform_options,
+                font_instance_platform_options,
                 variations,
             ) => {
                 debug_assert!(painter_id == font_key.into());
@@ -565,7 +565,7 @@ impl Paint {
                         font_key,
                         size,
                         font_instance_options,
-                        platform_options,
+                        font_instance_platform_options,
                         variations,
                     );
                 }

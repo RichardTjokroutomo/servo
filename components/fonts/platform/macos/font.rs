@@ -58,7 +58,7 @@ pub struct PlatformFont {
     pub(crate) ctfont: CFRetained<CTFont>,
     variations: Vec<FontVariation>,
     pub(crate) synthetic_bold: bool,
-    pub(crate) synthetic_italic: bool,
+    pub(crate) synthetic_oblique: bool,
 }
 
 // From https://developer.apple.com/documentation/coretext:
@@ -85,7 +85,7 @@ impl PlatformFont {
             ctfont,
             variations,
             synthetic_bold: false,
-            synthetic_italic: false,
+            synthetic_oblique: false,
         }
     }
 
@@ -150,8 +150,8 @@ impl PlatformFontMethods for PlatformFont {
         Ok(self)
     }
 
-    fn copy_with_synthetic_italic(mut self) -> Result<Self, &'static str> {
-        self.synthetic_italic = true;
+    fn copy_with_synthetic_oblique(mut self) -> Result<Self, &'static str> {
+        self.synthetic_oblique = true;
         Ok(self)
     }
 
@@ -323,6 +323,14 @@ impl PlatformFontMethods for PlatformFont {
 
     fn variations(&self) -> &[FontVariation] {
         &self.variations
+    }
+
+    fn synthetic_bold(&self) -> bool {
+        self.synthetic_bold
+    }
+
+    fn synthetic_oblique(&self) -> bool {
+        self.synthetic_oblique
     }
 
     fn create_skrifa_font(&self) -> Option<Arc<SkrifaFont>> {
